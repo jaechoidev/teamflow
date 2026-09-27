@@ -473,10 +473,14 @@ EOF
     comm -13 <(printf '%s\n' "$1") <(pane_ids_of) | head -1
   }
 
-  # Layout: 2 columns x 3 rows, reading order TL TR / L2 R2 / L3 R3.
-  #   p0 left col; split -h -> p1 right col;
-  #   left:  split p0 -v -p 67 -> p2, split p2 -v -p 50 -> p4
-  #   right: split p1 -v -p 67 -> p3, split p3 -v -p 50 -> p5
+  # Layout (T-0036): two true columns. p0 is split -h FIRST so order 2
+  # (reviewer) becomes the full-height right-column carrier p1; then p0 is
+  # split -v (order 1 = researcher, left bottom); the right column cascades
+  # on p1 with 75/66/50 splits (orders 3-5 into p3/p4/p5), which keeps every
+  # carrier large enough to continue (a naive 50/50 cascade runs out of
+  # pane). Sequential percent splits leave a 1..2-line height spread, so
+  # exact content heights are set afterwards by resize-pane (custom
+  # select-layout strings are rejected by this tmux build).
   local before pid
   tmux new-session -d -s "$sess" -n team -c "${order_cwds[0]}" "${order_cmds[0]}"
   tmux has-session -t "=$sess" 2>/dev/null \
@@ -485,6 +489,10 @@ EOF
   p0="$(pane_ids_of)"
   tmux rename-window -t "=$sess" "team"
   tmux set-window-option -t "=$sess" remain-on-exit on >/dev/null
+  # Border status must be on BEFORE any splits/resizes: enabling it later
+  # shrinks the pane grid by a line and tmux re-tiles proportionally,
+  # wiping exact pane heights set by the resize step below.
+  tmux set-window-option -t "=$sess" pane-border-status top >/dev/null
 
   # Drop routing vars from OUR session environment only, so anyone inspecting
   # `tmux show-environment -t` sees a clean session. The server-global
@@ -497,27 +505,49 @@ EOF
   done
 
   before="$(pane_ids_of)"
-  tmux split-window -d -h -p 50 -t "$p0" -c "${order_cwds[1]}" "${order_cmds[1]}"
+  tmux split-window -d -h -p 50 -t "$p0" -c "${order_cwds[2]}" "${order_cmds[2]}"
   p1="$(diff_new_pane "$before")"
 
   before="$(pane_ids_of)"
-  tmux split-window -d -v -p 67 -t "$p0" -c "${order_cwds[2]}" "${order_cmds[2]}"
+  tmux split-window -d -v -p 50 -t "$p0" -c "${order_cwds[1]}" "${order_cmds[1]}"
   p2="$(diff_new_pane "$before")"
 
   before="$(pane_ids_of)"
-  tmux split-window -d -v -p 50 -t "$p2" -c "${order_cwds[4]}" "${order_cmds[4]}"
-  p4="$(diff_new_pane "$before")"
-
-  before="$(pane_ids_of)"
-  tmux split-window -d -v -p 67 -t "$p1" -c "${order_cwds[3]}" "${order_cmds[3]}"
+  tmux split-window -d -v -p 75 -t "$p1" -c "${order_cwds[3]}" "${order_cmds[3]}"
   p3="$(diff_new_pane "$before")"
 
   before="$(pane_ids_of)"
-  tmux split-window -d -v -p 50 -t "$p3" -c "${order_cwds[5]}" "${order_cmds[5]}"
+  tmux split-window -d -v -p 66 -t "$p3" -c "${order_cwds[4]}" "${order_cmds[4]}"
+  p4="$(diff_new_pane "$before")"
+
+  before="$(pane_ids_of)"
+  tmux split-window -d -v -p 50 -t "$p4" -c "${order_cwds[5]}" "${order_cmds[5]}"
   p5="$(diff_new_pane "$before")"
 
+  # Exact equal sizing, grammar-free: resize the top rung of each column to
+  # a computed content height; tmux redistributes within that column only.
+  # The pane grid is wh-1 (the border-status line); the left column's two
+  # panes share grid-1 content lines, the right column's four share grid-3.
+  # Below a sane minimum, leave the proportional splits in place.
+  local ww wh grid lh rbase rrem
+  ww=$(tmux display-message -p -t "$p0" '#{window_width}')
+  wh=$(tmux display-message -p -t "$p0" '#{window_height}')
+  grid=$((wh - 1))
+  if [ "${ww:-0}" -ge 20 ] && [ "$grid" -ge 10 ]; then
+    lh=$(( (grid - 1) / 2 ))
+    rbase=$(( (grid - 3) / 4 ))
+    rrem=$(( (grid - 3) - rbase * 4 ))
+    tmux resize-pane -t "$p0" -y "$lh" 2>/dev/null
+    tmux resize-pane -t "$p1" -y $(( rbase + (rrem > 0 ? 1 : 0) )) 2>/dev/null
+    tmux resize-pane -t "$p3" -y $(( rbase + (rrem > 1 ? 1 : 0) )) 2>/dev/null
+    tmux resize-pane -t "$p4" -y $(( rbase + (rrem > 2 ? 1 : 0) )) 2>/dev/null
+  fi
+
+  # pane ids in conf/role order (p0,p2,p1,p3,...): the die message and the
+  # role->pane registry must map by role, not by split order
+  local -a role_pids=("$p0" "$p2" "$p1" "$p3" "$p4" "$p5")
   local _pid _i=0
-  for _pid in "$p0" "$p1" "$p2" "$p3" "$p4" "$p5"; do
+  for _pid in "${role_pids[@]}"; do
     case "$_pid" in
       %*) ;;
       *) tmux kill-session -t "=$sess" 2>/dev/null
@@ -550,7 +580,7 @@ $tsv
 EOF
 
   # Labels + pane registry (role -> pane id, used by pane.sh)
-  local -a pids=("$p0" "$p1" "$p2" "$p3" "$p4" "$p5")
+  local -a pids=("${role_pids[@]}")
   : > "$mailbox/panes.tsv"
   local i labels
   i=0
@@ -561,7 +591,6 @@ EOF
   done <<EOF
 $tsv
 EOF
-  tmux set-window-option -t "=$sess" pane-border-status top >/dev/null
 
   say "workspace up: $sess"
   say "delegator = pane $p0 (codex). Workers idle until addressed — role files are pre-loaded via system prompt (claude/zai) or the startup prompt (codex)."

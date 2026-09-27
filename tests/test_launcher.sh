@@ -122,11 +122,51 @@ assert_eq "1" "$([ -n "$SESS" ] && echo 1)" "up printed a session name ($SESS)"
 sleep 1  # let panes boot stubs
 assert_eq "6" "$(tmux list-panes -t "=$SESS" -F '#{pane_id}' | wc -l | tr -d ' ')" "six panes created"
 
-# geometry: reading order by (top,left): delegator researcher / reviewer dev-senior / dev-mid dev-junior
-GEO=$(tmux list-panes -t "=$SESS" -F '#{pane_top} #{pane_left} #{pane_title}' | sort -k1,1n -k2,2n | sed 's/^[0-9]* [0-9]* //' | tr '\n' ' ')
-assert_contains "$GEO" "Delegator (codex) Researcher" "row1 left-to-right"
-assert_contains "$GEO" "Planner (claude fable) Dev Senior" "row2 order"
-assert_contains "$GEO" "Dev Mid (claude opus) Dev Junior" "row3 order"
+# geometry (T-0036): left column Delegator/Researcher, right column stacked
+# Reviewer/Dev Senior/Dev Mid/Dev Junior. Role->pane comes from the registry
+# (panes.tsv), independent of tmux pane numbering. geoline prints id:top:left:width:height.
+PANETSV="$TGT/.git/ai-team/panes.tsv"
+geoline() {
+  local pid
+  pid=$(awk -F '\t' -v r="$1" '$1 == r {print $2; exit}' "$PANETSV")
+  printf '%s:' "$pid"
+  tmux display-message -p -t "$pid" '#{pane_top}:#{pane_left}:#{pane_width}:#{pane_height}'
+}
+G_D=$(geoline delegator); G_R=$(geoline researcher); G_V=$(geoline reviewer)
+G_S=$(geoline dev-senior); G_M=$(geoline dev-mid); G_J=$(geoline dev-junior)
+fld() { printf '%s' "$1" | cut -d: -f"$2"; }
+assert_eq "6" "$(printf '%s\n' "$G_D" "$G_R" "$G_V" "$G_S" "$G_M" "$G_J" | cut -d: -f1 | sort -u | wc -l | tr -d ' ')" "six distinct registry panes"
+# columns: left edge shared within a column, left strictly left of right
+assert_eq "$(fld "$G_D" 3)" "$(fld "$G_R" 3)" "left column shares a left edge"
+assert_eq "$(fld "$G_V" 3)" "$(fld "$G_S" 3)" "right column shares a left edge (top pair)"
+assert_eq "$(fld "$G_M" 3)" "$(fld "$G_J" 3)" "right column shares a left edge (bottom pair)"
+assert_eq "$(fld "$G_V" 3)" "$(fld "$G_M" 3)" "right column left edge consistent"
+[ "$(fld "$G_D" 3)" -lt "$(fld "$G_V" 3)" ] \
+  && _PASS=$((_PASS+1)) || { echo "FAIL: left column not left of right column"; _FAIL=$((_FAIL+1)); }
+# equal-width columns (within tmux line rounding)
+assert_eq "$(fld "$G_R" 4)" "$(fld "$G_D" 4)" "researcher width matches delegator (true left column)"
+assert_eq "$(fld "$G_S" 4)" "$(fld "$G_V" 4)" "right column width consistent (senior vs reviewer)"
+assert_eq "$(fld "$G_M" 4)" "$(fld "$G_V" 4)" "right column width consistent (mid vs reviewer)"
+assert_eq "$(fld "$G_J" 4)" "$(fld "$G_V" 4)" "right column width consistent (junior vs reviewer)"
+[ $(( $(fld "$G_D" 4) - $(fld "$G_V" 4) )) -le 1 ] && [ $(( $(fld "$G_V" 4) - $(fld "$G_D" 4) )) -le 1 ] \
+  && _PASS=$((_PASS+1)) || { echo "FAIL: columns not equal width ($(fld "$G_D" 4) vs $(fld "$G_V" 4))"; _FAIL=$((_FAIL+1)); }
+# vertical order within each column
+[ "$(fld "$G_D" 2)" -lt "$(fld "$G_R" 2)" ] \
+  && _PASS=$((_PASS+1)) || { echo "FAIL: delegator not above researcher"; _FAIL=$((_FAIL+1)); }
+[ "$(fld "$G_V" 2)" -lt "$(fld "$G_S" 2)" ] && [ "$(fld "$G_S" 2)" -lt "$(fld "$G_M" 2)" ] \
+  && [ "$(fld "$G_M" 2)" -lt "$(fld "$G_J" 2)" ] \
+  && _PASS=$((_PASS+1)) || { echo "FAIL: right column not stacked V<S<M<J"; _FAIL=$((_FAIL+1)); }
+# near-equal heights within each column (tmux rounds to whole lines)
+[ $(( $(fld "$G_D" 5) - $(fld "$G_R" 5) )) -le 1 ] && [ $(( $(fld "$G_R" 5) - $(fld "$G_D" 5) )) -le 1 ] \
+  && _PASS=$((_PASS+1)) || { echo "FAIL: left column unequal heights"; _FAIL=$((_FAIL+1)); }
+HMAX=$(( $(fld "$G_V" 5) > $(fld "$G_S" 5) ? $(fld "$G_V" 5) : $(fld "$G_S" 5) ))
+HMAX=$(( HMAX > $(fld "$G_M" 5) ? HMAX : $(fld "$G_M" 5) ))
+HMAX=$(( HMAX > $(fld "$G_J" 5) ? HMAX : $(fld "$G_J" 5) ))
+HMIN=$(( $(fld "$G_V" 5) < $(fld "$G_S" 5) ? $(fld "$G_V" 5) : $(fld "$G_S" 5) ))
+HMIN=$(( HMIN < $(fld "$G_M" 5) ? HMIN : $(fld "$G_M" 5) ))
+HMIN=$(( HMIN < $(fld "$G_J" 5) ? HMIN : $(fld "$G_J" 5) ))
+[ $((HMAX - HMIN)) -le 1 ] \
+  && _PASS=$((_PASS+1)) || { echo "FAIL: right column heights spread $HMIN..$HMAX"; _FAIL=$((_FAIL+1)); }
 
 # stubs saw the right env + cwds
 LOG=$(cat "$STUB_LOG")

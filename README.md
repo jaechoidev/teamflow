@@ -1,7 +1,8 @@
 # ai-team — six-agent tmux workspace
 
 One command opens a tmux session with six persistent CLI agents in a fixed
-2×3 layout, each with its own role, a shared task mailbox, and (for the
+layout: Delegator and Researcher in the left column, four workers stacked
+down the right, each with its own role, a shared task mailbox, and (for the
 developers) dedicated git worktrees. Portable: any git repo can adopt it.
 
 ```
@@ -20,16 +21,26 @@ skip that line for an existing repo. `init` copies `scripts/ai-team` and
 `ai-team.conf` only when absent (yours to edit; init never overwrites
 it), and updates only the marked AGENTS.md section. `up` then needs the
 repo to have at least one commit already (a fresh `git init` has none:
-commit once, the scaffold counts) because worktrees cannot branch off an
+commit once, the scaffold counts). That first commit is a launcher
+requirement, not a Git limitation: role branches and worktrees are
+created from HEAD, and Git itself could make orphan worktrees even in an
 empty repo.
 
 ## Pane map
 
-| | Left | Right |
-| --- | --- | --- |
-| **Row 1** | Delegator — Codex (`gpt-6-sol`), your voice/interface | Researcher — z.ai GLM (`glm-5.3`) |
-| **Row 2** | Reviewer & Planner — Claude (`fable`, xhigh) | Dev Senior — Claude (`fable`, xhigh) |
-| **Row 3** | Dev Mid — Claude (`opus`, xhigh) | Dev Junior — z.ai GLM (`glm-5.3`) |
+Left column (top to bottom):
+
+1. **Delegator** — Codex (`gpt-6-sol`), your voice/interface
+2. **Researcher** — z.ai GLM (`glm-5.3`)
+
+Right column (top to bottom):
+
+1. **Reviewer & Planner** — Claude (`fable`, xhigh)
+2. **Dev Senior** — Claude (`fable`, xhigh)
+3. **Dev Mid** — Claude (`opus`, xhigh)
+4. **Dev Junior** — z.ai GLM (`glm-5.3`)
+
+Equal-width columns.
 
 Models, CLIs, and effort levels are config, not code: edit `ai-team.conf`
 (one file, one `[pane.<role>]` section per pane, in layout order). The
