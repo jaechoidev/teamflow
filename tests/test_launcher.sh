@@ -136,6 +136,16 @@ for role in delegator researcher reviewer dev-senior dev-mid dev-junior; do
   assert_contains "$V" "$role" "verify lists $role"
 done
 
+# verify reads ack timestamps from JSON ack records (T-0003 format) and
+# tolerates legacy text records without crashing
+mkdir -p "$MB/acks"
+printf '{"role": "researcher", "time": "2026-09-27T09:00:00Z"}\n' > "$MB/acks/researcher.json"
+printf 'role: researcher\ntime: 2026-09-27T08:00:00Z\n' > "$MB/acks/dev-mid.json"
+V=$(bash "$TGT/scripts/ai-team" --verify 2>/dev/null)
+assert_contains "$V" "2026-09-27T09:00:00Z" "verify shows JSON ack timestamp"
+assert_contains "$V" "dev-mid" "verify tolerates legacy ack record"
+rm -f "$MB/acks/researcher.json" "$MB/acks/dev-mid.json"
+
 # a task dispatched through the real mailbox round-trips
 export AGENT_MAILBOX="$MB"
 TID=$(echo "please test the thing" | bash "$TGT/.agents/lib/task.sh" new dev-junior "test task")

@@ -393,10 +393,18 @@ cmd_verify() {
   local mailbox; mailbox="$(git_common_dir "$root")/ai-team"
   echo "session: $sess ($(tmux has-session -t "=$sess" 2>/dev/null && echo up || echo DOWN))"
   while IFS="$(printf '\t')" read -r role label cli model effort worktree; do
-    local pid ack="no" alive="gone"
+    local pid ack="no" alive="gone" ack_time=""
     pid=$(awk -F '\t' -v r="$role" '$1 == r {print $2; exit}' "$mailbox/panes.tsv" 2>/dev/null)
     [ -n "$pid" ] && tmux list-panes -a -F '#{pane_id}' 2>/dev/null | grep -qx "$pid" && alive="pane $pid"
-    [ -f "$mailbox/acks/$role.json" ] && ack="yes ($(sed -n 's/^time: //p' "$mailbox/acks/$role.json"))"
+    if [ -f "$mailbox/acks/$role.json" ]; then
+      # ack records are JSON (T-0003 format); fall back to a bare "yes" for
+      # missing time fields or legacy/unreadable records rather than crashing
+      ack_time="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("time",""))' "$mailbox/acks/$role.json" 2>/dev/null)"
+      case "$ack_time" in
+        ?*) ack="yes ($ack_time)" ;;
+        *)  ack="yes" ;;
+      esac
+    fi
     printf '%-12s %-22s ack=%-28s %s\n' "$role" "$alive" "$ack" "$label"
   done <<EOF
 $(printf '%s' "$confout" | tail -n +2)
