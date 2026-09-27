@@ -7,7 +7,9 @@
 #
 # Commands:
 #   new <to-role> <title>     create a task; body from stdin; prints task id
-#   take <id>                 claim: status assigned -> in-progress
+#   take <id>                 claim: status assigned -> in-progress;
+#                             exclusive (atomic mkdir of <id>/claim) and only
+#                             for the role the task is addressed to
 #   done <id>                 complete: result from stdin, status -> done
 #   read <id>                 print task + result (if any)
 #   status <id>               print status word
@@ -17,8 +19,10 @@
 #   clean [days]              prune done tasks older than N days (default 7)
 #
 # Concurrency: one directory per task; creation is an atomic mkdir race;
-# status updates are writes to distinct files, so parallel writers never
-# share a file. No shared mutable research.md/review.md — ever.
+# claims likewise: `take` must win an atomic mkdir of the task's claim/
+# directory, so exactly one claim ever exists and later takers lose. Status
+# updates are writes to distinct files, so parallel writers never share a
+# file. No shared mutable research.md/review.md — ever.
 set -u
 
 fail() { echo "task.sh: $*" >&2; exit 1; }
@@ -30,6 +34,12 @@ ACKS="$AGENT_MAILBOX/acks"
 mkdir -p "$TASKS" "$ACKS" 2>/dev/null || fail "cannot write mailbox at $AGENT_MAILBOX"
 
 now() { date -u +%Y-%m-%dT%H:%M:%SZ; }
+json_str() { # render $1 as a JSON string literal (escape \ and ")
+  local s="$1"
+  s="${s//\\/\\\\}"
+  s="${s//\"/\\\"}"
+  printf '"%s"' "$s"
+}
 next_id() { # atomic: find first unused T-<counter> directory
   local i=1 d
   while :; do
@@ -60,9 +70,18 @@ case "$cmd" in
   take)
     id="${1:?usage: take <id>}"
     [ -d "$TASKS/$id" ] || fail "no such task: $id"
+    role="${AGENT_ROLE:-}"
+    [ -n "$role" ] || fail "take requires AGENT_ROLE (run from an ai-team pane)"
+    to=$(sed -n 's/^to:      //p' "$TASKS/$id/task.md" | head -1)
+    [ "$to" = "$role" ] || fail "$id is addressed to ${to:-unknown}, not $role"
     [ "$(cat "$TASKS/$id/status" 2>/dev/null)" = "done" ] && fail "$id already done"
+    # exclusive claim: only one mkdir of claim/ can ever succeed
+    if ! mkdir "$TASKS/$id/claim" 2>/dev/null; then
+      fail "$id already claimed by $(cat "$TASKS/$id/claim/owner" 2>/dev/null || echo 'another role')"
+    fi
+    echo "$role" > "$TASKS/$id/claim/owner"
     echo "in-progress" > "$TASKS/$id/status"
-    echo "$(now) taken by ${AGENT_ROLE:-?}" >> "$TASKS/$id/events"
+    echo "$(now) taken by $role" >> "$TASKS/$id/events"
     ;;
   done)
     id="${1:?usage: done <id>}"
@@ -104,8 +123,9 @@ case "$cmd" in
     ;;
   ack)
     role="${AGENT_ROLE:-unknown}"
-    printf 'role: %s\nid: %s\ntime: %s\ncwd: %s\n' \
-      "$role" "${AGENT_ID:-?}" "$(now)" "$PWD" > "$ACKS/$role.json"
+    printf '{\n  "role": %s,\n  "id": %s,\n  "time": %s,\n  "cwd": %s\n}\n' \
+      "$(json_str "$role")" "$(json_str "${AGENT_ID:-?}")" \
+      "$(json_str "$(now)")" "$(json_str "$PWD")" > "$ACKS/$role.json"
     echo "acked: $role"
     ;;
   clean)
