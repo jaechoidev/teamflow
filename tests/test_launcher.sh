@@ -50,6 +50,26 @@ assert_contains "$out" "not inside a git repository" "up diagnostic names the re
 assert_eq "0" "$(printf '%s' "$out" | grep -c 'no ai-team.conf' || true)" "up not misreported as missing conf"
 rm -rf "$NONGIT"
 
+# up in a zero-commit repo: die in preflight before any side effect
+UNBORN="$(mktemp -d)/proj"; mkdir -p "$UNBORN"
+( cd "$UNBORN" && git init -q -b main \
+  && git config user.email t@t && git config user.name t \
+  && bash "$TOOL/scripts/ai-team" init >/dev/null 2>&1 \
+  && sed -i '' "s|^zai_env = .*|zai_env = $STUBS/zai-env.sh|" ai-team.conf )
+out="$( cd "$UNBORN" && bash "$TOOL/scripts/ai-team" up 2>&1 )"; rc=$?
+assert_eq "1" "$rc" "up with zero commits exits nonzero"
+assert_contains "$out" "no commits yet" "actionable diagnostic"
+assert_eq "1" "$(printf '%s\n' "$out" | grep -c '^ai-team: ')" "exactly one diagnostic line"
+assert_eq "0" "$(ls "$UNBORN" | grep -c 'ai-team-worktrees' || true)" "no worktrees created"
+assert_eq "0" "$(tmux list-sessions 2>/dev/null | wc -l | tr -d ' ')" "no tmux session created"
+
+# a valid first commit unlocks up (full run with stub CLIs)
+( cd "$UNBORN" && echo hi > file.txt && git add . && git commit -qm initial )
+SESS_U="$( cd "$UNBORN" && bash "$TOOL/scripts/ai-team" up --no-attach 2>/dev/null )"
+assert_eq "1" "$([ -n "$SESS_U" ] && echo 1)" "up proceeds after first commit ($SESS_U)"
+tmux kill-session -t "=$SESS_U" 2>/dev/null
+rm -rf "$(dirname "$UNBORN")"
+
 # init is idempotent: section appears once, conf untouched after user edits
 echo "# my local note" >> ai-team.conf
 bash "$TOOL/scripts/ai-team" init 2>/dev/null
