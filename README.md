@@ -57,37 +57,45 @@ says exactly what and where to fix it.
 ## Integrating approved work
 
 Concurrent work is isolated by construction: each developer role commits to
-its own branch `ai-team/<role>` in its own worktree, and task scopes are
-assigned not to overlap. Integration is always your call (AGENTS.md: no
-merges, commits-to-main, or pushes without approval) and happens one role at
-a time in the main checkout. `main` below means your default branch.
+its own branch `ai-team/<role>` in its own worktree, one commit per
+completed task, and task scopes are assigned not to overlap. The flow: the
+role finishes and reports its commit, the Reviewer inspects and approves
+it, then the Delegator integrates into `main` with your approval, one role
+at a time. Nothing is pushed without your explicit go-ahead. `main` below
+means your default branch.
 
 ```
-# Inspect one role's work (read-only, no checkout needed). The reviewer
-# uses the same commands before recommending integration.
+# Inspect one role's work (read-only, no checkout needed). The Reviewer
+# uses these commands before approving. An empty log means the role has
+# nothing to integrate: skip it.
 git -C .ai-team-worktrees/dev-mid log --oneline main..ai-team/dev-mid
 git -C .ai-team-worktrees/dev-mid diff main...ai-team/dev-mid
 git -C .ai-team-worktrees/dev-mid diff --name-only main...ai-team/dev-mid
 
-# With approval, integrate exactly one role in the main checkout.
+# Integrate exactly one role, only after Reviewer approval and yours.
+# The main checkout must be clean before starting.
+git status --short                 # in the main checkout: no output = clean
 git checkout main
 git cherry-pick main..ai-team/dev-mid
-# or squash into a patch. Both stop on conflict instead of overwriting:
+# or squash into one commit. Both paths stop on conflict instead of
+# overwriting:
 # git -C .ai-team-worktrees/dev-mid diff main...ai-team/dev-mid | git apply --3way
+# git commit -m "type(scope): subject for the whole task"
 
 # Verify before integrating the next role.
 bash tests/run_all.sh
 
 # Optional: refresh the other roles' worktrees so later work rebases onto
-# the updated main and future patches apply cleanly.
+# the updated main and future patches apply cleanly. Rebase a role's
+# worktree only when it is idle (its CLI not mid-task) and clean
+# (git -C .ai-team-worktrees/<role> status shows nothing).
 git -C .ai-team-worktrees/dev-senior rebase main
 ```
 
 Because integration goes through `cherry-pick` or `git apply --3way`, a
 collision with already-integrated work stops as a conflict you resolve
 deliberately. No role's checkout ever overwrites another's files, and
-neither the launcher nor the roles merge, commit to main, or push on their
-own.
+nothing merges into main or leaves the machine without your approval.
 
 ## Where things live
 
