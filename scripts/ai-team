@@ -320,13 +320,14 @@ EOF
   tmux rename-window -t "=$sess" "team"
   tmux set-window-option -t "=$sess" remain-on-exit on >/dev/null
 
-  # Keep routing vars out of the tmux environment as well: new panes merge the
-  # server-global env back in, so session-only clearing would still leak. The
-  # in-pane unset above is authoritative; this is hygiene for later panes.
+  # Drop routing vars from OUR session environment only, so anyone inspecting
+  # `tmux show-environment -t` sees a clean session. The server-global
+  # environment is left exactly as found: unrelated sessions may depend on it.
+  # Panes still merge the global env back in; the in-pane unset in the pane
+  # command removes it before claude runs, so claude never sees routing vars.
   local v
   for v in $CLAUDE_ROUTING_VARS; do
     tmux set-environment -u -t "=$sess" "$v" 2>/dev/null
-    tmux set-environment -gu "$v" 2>/dev/null
   done
 
   before="$(pane_ids_of)"

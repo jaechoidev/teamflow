@@ -106,9 +106,17 @@ for role in researcher dev-junior; do
   assert_contains "$Z" "MODEL=stub-glm" "$role: model from env file"
 done
 assert_eq "0" "$(grep -c polluted "$STUB_LOG")" "no pane sees shell-exported routing vars"
+# the server-global environment must be left exactly as found: unrelated
+# sessions on this tmux server may depend on it (T-0022). Token values are
+# never printed, only their presence.
 tmux show-environment -g ANTHROPIC_BASE_URL >/dev/null 2>&1 \
-  && { echo "FAIL: tmux global env still carries ANTHROPIC_BASE_URL"; _FAIL=$((_FAIL+1)); } \
-  || _PASS=$((_PASS+1))
+  && _PASS=$((_PASS+1)) || { echo "FAIL: tmux global env lost ANTHROPIC_BASE_URL"; _FAIL=$((_FAIL+1)); }
+[ "$(tmux show-environment -g ANTHROPIC_BASE_URL 2>/dev/null)" = "ANTHROPIC_BASE_URL=https://polluted.example/api" ] \
+  && _PASS=$((_PASS+1)) || { echo "FAIL: tmux global ANTHROPIC_BASE_URL value changed"; _FAIL=$((_FAIL+1)); }
+tmux show-environment -g ANTHROPIC_AUTH_TOKEN >/dev/null 2>&1 \
+  && _PASS=$((_PASS+1)) || { echo "FAIL: tmux global env lost ANTHROPIC_AUTH_TOKEN"; _FAIL=$((_FAIL+1)); }
+# our own session environment is cleaned for inspection; the in-pane unset is
+# what actually guards claude
 tmux show-environment -t "$SESS" ANTHROPIC_AUTH_TOKEN >/dev/null 2>&1 \
   && { echo "FAIL: session env still carries ANTHROPIC_AUTH_TOKEN"; _FAIL=$((_FAIL+1)); } \
   || _PASS=$((_PASS+1))
