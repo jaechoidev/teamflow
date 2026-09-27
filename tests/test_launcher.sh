@@ -32,6 +32,24 @@ done
 assert_contains "$(cat AGENTS.md)" "# >>> ai-team >>>" "init wrote marked AGENTS.md section"
 assert_contains "$(cat .git/info/exclude)" ".ai-team-worktrees/" "init excluded worktrees"
 
+# init outside a git repo: one clear diagnostic, nonzero exit, zero side effects
+NONGIT="$(mktemp -d)"
+out="$( cd "$NONGIT" && bash "$TOOL/scripts/ai-team" init 2>&1 )"; rc=$?
+assert_eq "1" "$rc" "init outside git exits nonzero"
+assert_contains "$out" "not inside a git repository" "clear diagnostic printed"
+assert_eq "1" "$(printf '%s\n' "$out" | grep -c '^ai-team: ')" "exactly one diagnostic line"
+assert_eq "0" "$(printf '%s' "$out" | grep -c 'initialized in' || true)" "no success line after failure"
+assert_eq "" "$(ls -A "$NONGIT")" "no scaffolding left in target dir"
+rm -rf "$NONGIT"
+
+# up outside a git repo fails with the real diagnostic, not a misleading one
+NONGIT="$(mktemp -d)"
+out="$( cd "$NONGIT" && bash "$TOOL/scripts/ai-team" up 2>&1 )"; rc=$?
+assert_eq "1" "$rc" "up outside git exits nonzero"
+assert_contains "$out" "not inside a git repository" "up diagnostic names the real problem"
+assert_eq "0" "$(printf '%s' "$out" | grep -c 'no ai-team.conf' || true)" "up not misreported as missing conf"
+rm -rf "$NONGIT"
+
 # init is idempotent: section appears once, conf untouched after user edits
 echo "# my local note" >> ai-team.conf
 bash "$TOOL/scripts/ai-team" init 2>/dev/null

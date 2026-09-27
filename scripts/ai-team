@@ -44,6 +44,10 @@ git_common_dir() { # absolute path to the shared .git dir (works in worktrees)
   git -C "$1" rev-parse --path-format=absolute --git-common-dir 2>/dev/null \
     || die "cannot resolve git common dir for $1"
 }
+# Both helpers die on failure, but callers capture them with $(...), which
+# runs them in a subshell: a die there exits only the subshell and the empty
+# result would flow onward. Every call site therefore ends with `|| exit $?`
+# so the diagnostic and nonzero status actually stop the launcher.
 
 # conf_read <conf-file> -> TSV on stdout:
 #   workspace line: prefix<TAB>zai_env<TAB>ttl
@@ -214,7 +218,7 @@ reg_set_codex_id() { # $1 mailbox $2 role $3 id — record discovered id, mark l
 
 cmd_init() {
   local root src
-  root="$(repo_root)"
+  root="$(repo_root)" || exit $?
   src="$TOOL_HOME"
   [ -f "$src/.agents/AGENTS-SECTION.md" ] || die "tool files incomplete at $src (missing .agents/AGENTS-SECTION.md)"
 
@@ -251,7 +255,7 @@ open(ag, "w").write(s)
 PY
 
   local common
-  common="$(git_common_dir "$root")"
+  common="$(git_common_dir "$root")" || exit $?
   ensure_exclude "$common" ".ai-team-worktrees/"
 
   say "initialized in $root"
@@ -268,7 +272,7 @@ cmd_up() {
   command -v python3 >/dev/null 2>&1 || die "python3 not found"
 
   local root conf
-  root="$(repo_root)"
+  root="$(repo_root)" || exit $?
   conf="$root/ai-team.conf"
   [ -f "$conf" ] || conf="$TOOL_HOME/ai-team.conf"
   [ -f "$conf" ] || die "no ai-team.conf (run: scripts/ai-team init)"
@@ -326,7 +330,7 @@ EOF
 
   # ---- workspace: mailbox + worktrees ----------------------------------------
   local common mailbox
-  common="$(git_common_dir "$root")"
+  common="$(git_common_dir "$root")" || exit $?
   mailbox="$common/ai-team"
   mkdir -p "$mailbox/tasks" "$mailbox/acks" "$mailbox/sessions" || die "cannot create mailbox at $mailbox"
   ensure_exclude "$common" ".ai-team-worktrees/"
@@ -557,11 +561,11 @@ EOF
 
 cmd_verify() {
   local root confout prefix sess
-  root="$(repo_root)"
+  root="$(repo_root)" || exit $?
   confout="$(conf_read "$root/ai-team.conf" 2>/dev/null || conf_read "$TOOL_HOME/ai-team.conf")"
   prefix="$(printf '%s' "$confout" | head -1 | cut -f1)"
   sess="$(session_name "$root" "$prefix")"
-  local mailbox; mailbox="$(git_common_dir "$root")/ai-team"
+  local mailbox; mailbox="$(git_common_dir "$root")/ai-team" || exit $?
   echo "session: $sess ($(tmux has-session -t "=$sess" 2>/dev/null && echo up || echo DOWN))"
   while IFS="$(printf '\t')" read -r role label cli model effort worktree; do
     local pid ack="no" alive="gone" ack_time="" bid=""
@@ -592,7 +596,7 @@ EOF
 
 cmd_check_models() {
   local root conf confout zai_env_raw zai_env
-  root="$(repo_root)"
+  root="$(repo_root)" || exit $?
   conf="$root/ai-team.conf"
   [ -f "$conf" ] || conf="$TOOL_HOME/ai-team.conf"
   confout="$(conf_read "$conf")" || die "cannot parse $conf"
@@ -642,7 +646,7 @@ EOF
 
 cmd_kill() {
   local root confout prefix sess
-  root="$(repo_root)"
+  root="$(repo_root)" || exit $?
   confout="$(conf_read "$root/ai-team.conf" 2>/dev/null || conf_read "$TOOL_HOME/ai-team.conf")"
   prefix="$(printf '%s' "$confout" | head -1 | cut -f1)"
   sess="$(session_name "$root" "$prefix")"
