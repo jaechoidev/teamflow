@@ -5,7 +5,7 @@
 #   scripts/ai-team init          scaffold this tool into the current git repo
 #                                 (.agents/, ai-team.conf if absent, AGENTS.md
 #                                 marked section, ./scripts/ai-team copy)
-#   scripts/ai-team up            launch or reattach to the workspace
+#   scripts/ai-team up            launch (resumes role conversations) or reattach
 #   scripts/ai-team --verify      show pane liveness + role acknowledgements
 #   scripts/ai-team --check-models  probe configured models (spends a little
 #                                 quota; clean env, zai panes source zai_env)
@@ -103,6 +103,77 @@ install_file() { # $1 src $2 dst — user-edited files win; shipped copy staged 
     cp "$1" "$2.new"
     say "$(basename "$2") already exists and differs — kept yours; shipped copy at $2.new"
   fi
+}
+
+# ---------- per-role conversation registry ---------------------------------------
+# <git-common-dir>/ai-team/sessions/<role>: shell-sourceable KEY=VALUE lines
+# (ROLE, CLI, SESSION_ID, CWD, MODEL, STATUS, STARTED_AT, UPDATED_AT, and
+# SNAPSHOT for codex discovery). One file per role, written only by the
+# launcher. Stores ids and metadata only — never tokens, never transcript
+# content.
+is_uuid() {
+  printf '%s' "$1" | grep -qE '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$'
+}
+
+new_uuid() { python3 -c 'import uuid; print(uuid.uuid4())'; }
+
+now_utc() { date -u +%Y-%m-%dT%H:%M:%SZ; }
+
+reg_get() { # $1 mailbox $2 role $3 key -> value ('' when absent)
+  local f
+  f="$1/sessions/$2"
+  [ -f "$f" ] || return 0
+  grep -E "^$3=" "$f" 2>/dev/null | tail -1 | cut -d= -f2-
+}
+
+reg_write() { # $1 mailbox $2 role $3.. KEY=VALUE... (atomic replace)
+  local f kv
+  f="$1/sessions/$2"
+  mkdir -p "${f%/*}"
+  for kv in "${@:3}"; do printf '%s\n' "$kv"; done > "$f.tmp" && mv "$f.tmp" "$f"
+}
+
+claude_session_exists() { # $1 session id -> transcript still on disk?
+  is_uuid "$1" || return 1
+  find "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/projects" -maxdepth 2 -name "$1.jsonl" 2>/dev/null | grep -q .
+}
+
+codex_session_exists() { # $1 session id -> known to this codex install?
+  is_uuid "$1" || return 1
+  local ch="${CODEX_HOME:-$HOME/.codex}"
+  grep -q "\"$1\"" "$ch/session_index.jsonl" 2>/dev/null && return 0
+  find "$ch/sessions" -name "*$1*" 2>/dev/null | grep -q .
+}
+
+codex_new_ids_since() { # $1 snapshot line count -> newest minted id ('' if none)
+  local ch="${CODEX_HOME:-$HOME/.codex}" found
+  local snap="${1:-0}"
+  case "$snap" in *[!0-9]*) snap=0 ;; esac
+  found="$(tail -n +"$((snap + 1))" "$ch/session_index.jsonl" 2>/dev/null | python3 -c '
+import sys, json
+for line in reversed(sys.stdin.readlines()):
+    line = line.strip()
+    if not line:
+        continue
+    try:
+        i = json.loads(line).get("id", "")
+    except Exception:
+        continue
+    if i:
+        print(i)
+        break
+' 2>/dev/null)"
+  is_uuid "$found" || found=""
+  printf '%s' "$found"
+}
+
+reg_set_codex_id() { # $1 mailbox $2 role $3 id — record discovered id, mark live
+  local m="$1" r="$2"
+  reg_write "$m" "$r" \
+    "ROLE=$r" "CLI=codex" "SESSION_ID=$3" \
+    "CWD=$(reg_get "$m" "$r" CWD)" "MODEL=$(reg_get "$m" "$r" MODEL)" \
+    "STATUS=live" "STARTED_AT=$(reg_get "$m" "$r" STARTED_AT)" \
+    "UPDATED_AT=$(now_utc)" "SNAPSHOT=$(reg_get "$m" "$r" SNAPSHOT)"
 }
 
 # ---------- init ---------------------------------------------------------------
@@ -223,7 +294,7 @@ EOF
   local common mailbox
   common="$(git_common_dir "$root")"
   mailbox="$common/ai-team"
-  mkdir -p "$mailbox/tasks" "$mailbox/acks" || die "cannot create mailbox at $mailbox"
+  mkdir -p "$mailbox/tasks" "$mailbox/acks" "$mailbox/sessions" || die "cannot create mailbox at $mailbox"
   ensure_exclude "$common" ".ai-team-worktrees/"
 
   local role worktree wt_root branch
@@ -251,9 +322,9 @@ EOF
   local lib_dir="$root/.agents/lib"
   [ -d "$lib_dir" ] || lib_dir="$TOOL_HOME/.agents/lib"
 
-  pane_cmd() { # role cli model effort cwd rolefile -> pane shell command
-    local prole="$1" pcli="$2" pmodel="$3" peffort="$4" pcwd="$5" pfile="$6"
-    local envs qfile qmailbox qlib
+  pane_cmd() { # role cli model effort cwd rolefile sid mode -> pane shell command
+    local prole="$1" pcli="$2" pmodel="$3" peffort="$4" pcwd="$5" pfile="$6" psid="$7" pmode="$8"
+    local envs qfile qmailbox qlib sflag
     qfile="$(shell_quote "$pfile")"
     qmailbox="$(shell_quote "$mailbox")"
     qlib="$(shell_quote "$lib_dir")"
@@ -262,23 +333,32 @@ EOF
     envs="export AGENT_ROLE=$(shell_quote "$prole") AGENT_ID=$(shell_quote "$sess-$prole") \
 AGENT_ROLE_FILE=$qfile AGENT_MAILBOX=$qmailbox AGENT_LIB_DIR=$qlib;"
     local base="" bin
+    sflag="--session-id"
+    [ "$pmode" = resume ] && sflag="--resume"
     case "$pcli" in
       codex)
         bin="$(shell_quote "$CODEX_BIN")"
         # Full access mode (user request): no approval prompts, no sandbox.
-        base="$bin --dangerously-bypass-approvals-and-sandbox -m $(shell_quote "$pmodel") \
+        if [ "$pmode" = resume ]; then
+          # explicit-id resume: flags belong to the resume subcommand
+          # (codex-cli 0.156.1 help); never --last/--continue (picker would
+          # be cwd-scoped across roles).
+          base="$bin resume $(shell_quote "$psid") --dangerously-bypass-approvals-and-sandbox -m $(shell_quote "$pmodel") -C $(shell_quote "$pcwd")"
+        else
+          base="$bin --dangerously-bypass-approvals-and-sandbox -m $(shell_quote "$pmodel") \
 \"You are the team Delegator. Read $(shell_quote "$pfile") and adopt the role. \
 Then read AGENTS.md in $(shell_quote "$pcwd"), run: bash $qlib/task.sh ack, and reply READY only.\""
+        fi
         ;;
       claude)
         bin="$(shell_quote "$CLAUDE_BIN")"
-        base="unset $CLAUDE_ROUTING_VARS; $bin --model $(shell_quote "$pmodel")"
+        base="unset $CLAUDE_ROUTING_VARS; $bin $sflag $(shell_quote "$psid") --model $(shell_quote "$pmodel")"
         [ -n "$peffort" ] && base="$base --effort $(shell_quote "$peffort")"
         base="$base --append-system-prompt-file $qfile"
         ;;
       zai)
         bin="$(shell_quote "$CLAUDE_BIN")"
-        base="unset $CLAUDE_ROUTING_VARS; . $(shell_quote "$zai_env") && $bin --model $(shell_quote "$pmodel")"
+        base="unset $CLAUDE_ROUTING_VARS; . $(shell_quote "$zai_env") && $bin $sflag $(shell_quote "$psid") --model $(shell_quote "$pmodel")"
         [ -n "$peffort" ] && base="$base --effort $(shell_quote "$peffort")"
         base="$base --append-system-prompt-file $qfile"
         ;;
@@ -295,8 +375,41 @@ Then read AGENTS.md in $(shell_quote "$pcwd"), run: bash $qlib/task.sh ack, and 
     local cwd="$root"
     [ "$worktree" = "yes" ] && cwd="$wt_root/$role"
     order_cwds[$idx]="$cwd"
-    order_cmds[$idx]="$(pane_cmd "$role" "$cli" "$model" "$effort" "$cwd" "$root/.agents/roles/$role.md")"
-    [ -f "$root/.agents/roles/$role.md" ] || order_cmds[$idx]="$(pane_cmd "$role" "$cli" "$model" "$effort" "$cwd" "$TOOL_HOME/.agents/roles/$role.md")"
+
+    # conversation persistence: resume the stored id only when its transcript
+    # still exists; otherwise start fresh and store the new id (claude/zai)
+    # or discover codex's minted id after boot. Never --continue/--last:
+    # panes share cwd, so "most recent" could cross roles.
+    local sid mode status snap=""
+    sid="$(reg_get "$mailbox" "$role" SESSION_ID)"
+    case "$cli" in
+      claude|zai)
+        if claude_session_exists "$sid"; then
+          mode=resume
+        else
+          mode=fresh
+          sid="$(new_uuid)"
+        fi
+        ;;
+      codex)
+        if codex_session_exists "$sid"; then
+          mode=resume
+        else
+          mode=fresh
+          sid=""
+          snap="$(wc -l < "${CODEX_HOME:-$HOME/.codex}/session_index.jsonl" 2>/dev/null | tr -d ' ')"
+        fi
+        ;;
+    esac
+    status=live
+    [ "$mode" = fresh ] && status=pending
+    local -a reg=(ROLE="$role" CLI="$cli" SESSION_ID="$sid" CWD="$cwd" MODEL="$model" \
+      STATUS="$status" UPDATED_AT="$(now_utc)")
+    [ "$mode" = fresh ] && reg+=(STARTED_AT="$(now_utc)" SNAPSHOT="$snap")
+    reg_write "$mailbox" "$role" "${reg[@]}"
+
+    order_cmds[$idx]="$(pane_cmd "$role" "$cli" "$model" "$effort" "$cwd" "$root/.agents/roles/$role.md" "$sid" "$mode")"
+    [ -f "$root/.agents/roles/$role.md" ] || order_cmds[$idx]="$(pane_cmd "$role" "$cli" "$model" "$effort" "$cwd" "$TOOL_HOME/.agents/roles/$role.md" "$sid" "$mode")"
     idx=$((idx + 1))
   done <<EOF
 $tsv
@@ -360,6 +473,27 @@ EOF
     _i=$((_i + 1))
   done
 
+  # codex mints its own session id on first boot: poll the session index and
+  # store it. If it never shows up (slow or old codex, dead pane), the entry
+  # stays pending and `--verify` backfills it later.
+  local drole dlabel dcli dmodel deffort dworktree did dtries
+  while IFS="$(printf '\t')" read -r drole dlabel dcli dmodel deffort dworktree; do
+    if [ "$dcli" = codex ] && [ "$(reg_get "$mailbox" "$drole" STATUS)" = pending ] \
+       && [ -z "$(reg_get "$mailbox" "$drole" SESSION_ID)" ]; then
+      did=""
+      dtries=0
+      while [ "$dtries" -lt 20 ]; do
+        did="$(codex_new_ids_since "$(reg_get "$mailbox" "$drole" SNAPSHOT)")"
+        [ -n "$did" ] && break
+        dtries=$((dtries + 1))
+        sleep 0.25
+      done
+      [ -n "$did" ] && reg_set_codex_id "$mailbox" "$drole" "$did"
+    fi
+  done <<EOF
+$tsv
+EOF
+
   # Labels + pane registry (role -> pane id, used by pane.sh)
   local -a pids=("$p0" "$p1" "$p2" "$p3" "$p4" "$p5")
   : > "$mailbox/panes.tsv"
@@ -394,9 +528,15 @@ cmd_verify() {
   local mailbox; mailbox="$(git_common_dir "$root")/ai-team"
   echo "session: $sess ($(tmux has-session -t "=$sess" 2>/dev/null && echo up || echo DOWN))"
   while IFS="$(printf '\t')" read -r role label cli model effort worktree; do
-    local pid ack="no" alive="gone" ack_time=""
+    local pid ack="no" alive="gone" ack_time="" bid=""
     pid=$(awk -F '\t' -v r="$role" '$1 == r {print $2; exit}' "$mailbox/panes.tsv" 2>/dev/null)
     [ -n "$pid" ] && tmux list-panes -a -F '#{pane_id}' 2>/dev/null | grep -qx "$pid" && alive="pane $pid"
+    # backfill a codex id that boot-time discovery missed (partial boot)
+    if [ "$cli" = codex ] && [ "$(reg_get "$mailbox" "$role" STATUS)" = pending ] \
+       && [ -z "$(reg_get "$mailbox" "$role" SESSION_ID)" ]; then
+      bid="$(codex_new_ids_since "$(reg_get "$mailbox" "$role" SNAPSHOT)")"
+      [ -n "$bid" ] && reg_set_codex_id "$mailbox" "$role" "$bid"
+    fi
     if [ -f "$mailbox/acks/$role.json" ]; then
       # ack records are JSON (T-0003 format); fall back to a bare "yes" for
       # missing time fields or legacy/unreadable records rather than crashing

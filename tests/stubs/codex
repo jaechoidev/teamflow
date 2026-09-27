@@ -1,7 +1,10 @@
 #!/usr/bin/env bash
 # Stub CLI (quota-free): logs invocation + role env, then idles so the pane
 # stays alive. Used by tests via PATH injection. STUB_FAIL=1 exits instantly
-# (exercises the launcher's instant-failure diagnostics).
+# (exercises the launcher's instant-failure diagnostics). Emulates codex
+# session minting: a fresh boot appends its new id to
+# ${CODEX_HOME:-~/.codex}/session_index.jsonl; a `resume` boot reuses the
+# existing entry and appends nothing.
 [ -n "${STUB_FAIL:-}" ] && exit 3
 log="${STUB_LOG:?set STUB_LOG}"
 { echo "=== $(basename "$0") $*"
@@ -10,4 +13,14 @@ log="${STUB_LOG:?set STUB_LOG}"
   echo "MAILBOX=$AGENT_MAILBOX"
   echo "cwd=$PWD"
 } >> "$log"
+case " $* " in
+  *" resume "*|*"--resume "*) ;;
+  *)
+    u=$(printf '%04x%04x-%04x-%04x-%04x-%04x%04x%04x' \
+      $RANDOM $RANDOM $RANDOM $RANDOM $RANDOM $RANDOM $RANDOM $RANDOM)
+    d="${CODEX_HOME:-$HOME/.codex}"
+    mkdir -p "$d"
+    printf '{"id": "%s", "thread_name": "stub"}\n' "$u" >> "$d/session_index.jsonl"
+    ;;
+esac
 exec sleep 600

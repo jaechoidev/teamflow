@@ -63,6 +63,10 @@ mv .agents/lib/pane.sh.new .agents/lib/pane.sh
 # --- up with stub CLIs ---------------------------------------------------------
 sed -i '' "s|^zai_env = .*|zai_env = $STUBS/zai-env.sh|" ai-team.conf
 export STUB_LOG="$TGT/stub.log"; : > "$STUB_LOG"
+# isolated CLI state dirs: stubs emulate transcript/session storage here, so
+# the suite never touches the real ~/.claude or ~/.codex
+export CLAUDE_CONFIG_DIR="$STUBS/claude-config"
+export CODEX_HOME="$STUBS/codex-home"
 
 # inherited z.ai/Anthropic routing vars must not reach claude panes (neither
 # via the shell nor via tmux-global inheritance); zai panes must see exactly
@@ -123,6 +127,26 @@ tmux show-environment -t "$SESS" ANTHROPIC_AUTH_TOKEN >/dev/null 2>&1 \
 
 # delegator codex pane launches in Full access mode
 assert_contains "$LOG" "--dangerously-bypass-approvals-and-sandbox" "codex pane runs Full access"
+
+# conversation persistence: a fresh start requests and stores per-role ids
+MS="$TGT/.git/ai-team/sessions"
+[ -d "$MS" ] && _PASS=$((_PASS+1)) || { echo "FAIL: sessions registry missing"; _FAIL=$((_FAIL+1)); }
+SID_R=$(sed -n 's/^SESSION_ID=//p' "$MS/researcher" 2>/dev/null)
+SID_V=$(sed -n 's/^SESSION_ID=//p' "$MS/reviewer" 2>/dev/null)
+SID_D=$(sed -n 's/^SESSION_ID=//p' "$MS/delegator" 2>/dev/null)
+UUID_RE='^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$'
+echo "$SID_R" | grep -qE "$UUID_RE" && _PASS=$((_PASS+1)) || { echo "FAIL: researcher session id stored [$SID_R]"; _FAIL=$((_FAIL+1)); }
+echo "$SID_V" | grep -qE "$UUID_RE" && _PASS=$((_PASS+1)) || { echo "FAIL: reviewer session id stored [$SID_V]"; _FAIL=$((_FAIL+1)); }
+echo "$SID_D" | grep -qE "$UUID_RE" && _PASS=$((_PASS+1)) || { echo "FAIL: codex session id discovered [$SID_D]"; _FAIL=$((_FAIL+1)); }
+[ "$SID_R" != "$SID_V" ] && _PASS=$((_PASS+1)) || { echo "FAIL: researcher/reviewer share a session id"; _FAIL=$((_FAIL+1)); }
+[ -f "$CLAUDE_CONFIG_DIR/projects/stub-project/$SID_R.jsonl" ] \
+  && _PASS=$((_PASS+1)) || { echo "FAIL: researcher transcript not created"; _FAIL=$((_FAIL+1)); }
+[ -f "$CLAUDE_CONFIG_DIR/projects/stub-project/$SID_V.jsonl" ] \
+  && _PASS=$((_PASS+1)) || { echo "FAIL: reviewer transcript not created"; _FAIL=$((_FAIL+1)); }
+assert_contains "$LOG" "--session-id" "fresh claude panes request a session id"
+assert_contains "$LOG" "--session-id $SID_R" "researcher requested its stored id"
+grep -q "token\|SECRET\|AUTH_TOKEN=" "$MS/researcher" && { echo "FAIL: secrets in registry"; _FAIL=$((_FAIL+1)); } \
+  || _PASS=$((_PASS+1))
 
 # worktrees + branches
 for role in dev-senior dev-mid dev-junior; do
@@ -187,6 +211,35 @@ mv ai-team.conf.keep ai-team.conf; rm -f cm.err
 bash "$TGT/scripts/ai-team" --kill >/dev/null 2>&1
 tmux has-session -t "=$SESS" 2>/dev/null && { echo "FAIL: session survived kill"; _FAIL=$((_FAIL+1)); } || _PASS=$((_PASS+1))
 [ -d "$TGT/.ai-team-worktrees/dev-mid" ] && _PASS=$((_PASS+1)) || { echo "FAIL: worktree removed"; _FAIL=$((_FAIL+1)); }
+
+# kill/relaunch: every role resumes its stored conversation id
+: > "$STUB_LOG"
+SESS2=$(bash "$TGT/scripts/ai-team" up --no-attach 2>/dev/null)
+sleep 1
+assert_eq "$SESS" "$SESS2" "relaunch reuses the deterministic session name"
+assert_eq "1" "$(tmux list-sessions -F '#{session_name}' 2>/dev/null | grep -c .)" "exactly one tmux session"
+LOG2=$(cat "$STUB_LOG")
+assert_contains "$LOG2" "--resume $SID_R" "researcher resumes its stored id"
+assert_contains "$LOG2" "--resume $SID_V" "reviewer resumes its stored id"
+assert_contains "$LOG2" "resume $SID_D" "codex resumes by explicit id"
+assert_eq "0" "$(grep -c -- '--session-id' "$STUB_LOG")" "relaunch issues no fresh ids"
+assert_contains "$LOG2" "--model glm-5.3" "resume re-passes the model"
+assert_contains "$LOG2" "--append-system-prompt-file" "resume re-passes the role file"
+assert_contains "$LOG2" "--dangerously-bypass-approvals-and-sandbox" "codex resume keeps Full access"
+
+# missing transcript: that role rolls over to a fresh id, others unaffected
+bash "$TGT/scripts/ai-team" --kill >/dev/null 2>&1
+rm -f "$CLAUDE_CONFIG_DIR/projects/stub-project/$SID_R.jsonl"
+: > "$STUB_LOG"
+SESS3=$(bash "$TGT/scripts/ai-team" up --no-attach 2>/dev/null)
+sleep 1
+LOG3=$(cat "$STUB_LOG")
+SID_R2=$(sed -n 's/^SESSION_ID=//p' "$MS/researcher" 2>/dev/null)
+[ "$SID_R2" != "$SID_R" ] && _PASS=$((_PASS+1)) || { echo "FAIL: researcher id not rolled over"; _FAIL=$((_FAIL+1)); }
+echo "$SID_R2" | grep -qE "$UUID_RE" && _PASS=$((_PASS+1)) || { echo "FAIL: rolled-over id invalid [$SID_R2]"; _FAIL=$((_FAIL+1)); }
+assert_contains "$LOG3" "--session-id $SID_R2" "researcher starts fresh after transcript loss"
+assert_contains "$LOG3" "--resume $SID_V" "reviewer unaffected by researcher rollover"
+bash "$TGT/scripts/ai-team" --kill >/dev/null 2>&1
 
 # a pane command that dies instantly gets a real diagnosis, not "this is a bug"
 export STUB_FAIL=1

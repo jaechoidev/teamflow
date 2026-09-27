@@ -6,7 +6,7 @@ developers) dedicated git worktrees. Portable: any git repo can adopt it.
 
 ```
 ./scripts/ai-team init     # once per project (scaffolds this tool into it)
-./scripts/ai-team up       # launch or reattach
+./scripts/ai-team up       # launch (resumes role conversations) or reattach
 ```
 
 ## Pane map
@@ -101,12 +101,37 @@ nothing merges into main or leaves the machine without your approval.
 
 - `.agents/roles/*.md` — role instructions (static; injected at launch)
 - `.git/ai-team/` — the mailbox: `tasks/<id>/{task.md,result.md,status}`,
-  `acks/`, `panes.tsv`, `sends.log` (runtime state; excluded from git;
-  instantly visible to all worktrees because it sits in the git common dir)
+  `acks/`, `panes.tsv`, `sends.log`, `sessions/<role>` (per-role conversation
+  registry; runtime state; excluded from git; instantly visible to all
+  worktrees because it sits in the git common dir)
 - `.ai-team-worktrees/<role>` + branches `ai-team/<role>` — developer panes
   (created only if absent, never reset)
 - Repo-root `AGENTS.md` — shared coordination rules (marked section,
   `ai-team init` owns only the markers)
+
+## Conversation persistence
+
+Each pane's CLI conversation survives `--kill` and relaunch. On a fresh `up`
+(read: the tmux session is gone) the launcher consults the per-role registry
+`.git/ai-team/sessions/<role>` and never touches a live session (reattach
+still wins):
+
+- **Claude / z.ai panes** boot with an explicit `--session-id` (a UUID the
+  launcher generates) and later boot with `--resume <id>`, always re-passing
+  `--model`, `--effort`, the role file and, for z.ai, the env file. The id
+  is reused only while its transcript still exists under
+  `$CLAUDE_CONFIG_DIR` (default `~/.claude`)/`projects/`; when it is gone
+  (expired or deleted) the role starts a new conversation under a fresh id.
+  The old transcript is never touched.
+- **Delegator (Codex)** mints its own id at first boot; the launcher
+  discovers it from `~/.codex/session_index.jsonl` (newest entry since
+  launch) and later resumes it with `codex resume <id>`, re-pinning model,
+  working directory, and full-access mode. If discovery is slow (codex still
+  booting), the registry stays `pending` and `--verify` backfills the id.
+- Roles never share ids, and `--continue`/`--last` are never used: panes
+  share a cwd, so "most recent in directory" could resume another role's
+  conversation. The registry stores ids and metadata only — no tokens, no
+  transcript content.
 
 ## Voice, models, and other honest limitations
 
@@ -126,11 +151,19 @@ nothing merges into main or leaves the machine without your approval.
 - **Busy CLIs**: `send-to` types into a pane; if that CLI is mid-turn the
   text queues as input. Check `pane.sh tail <role>`, and rely on task
   records for outcomes.
+- **Conversation persistence**: claude transcripts auto-expire per your
+  claude retention settings (default 30 days) — expect a conversation
+  rollover then. Codex id discovery assumes no *other* codex session starts
+  on the machine in the same seconds; if one races it, the launcher may
+  store the wrong id for the delegator (delete
+  `.git/ai-team/sessions/delegator` to reset). Two concurrent `up` runs in
+  different terminals could resume the same id twice — run one at a time.
 
 ## Tests
 
-`bash tests/run_all.sh` — 121 assertions: layout order, role routing, env
-handoff, worktrees, mailbox concurrency, send-to quoting (incl. the
-delegator-pane guard), task claim/completion exclusivity, init
-idempotence, reattach, diagnostics. Uses stub CLIs and an isolated tmux
-socket; spends no model quota.
+`bash tests/run_all.sh` runs 173 assertions for layout order, role routing,
+environment handoff, worktrees, mailbox concurrency, send-to quoting and the
+Delegator pane guard, task claim and completion exclusivity, init
+idempotence, reattach, diagnostics, and conversation persistence (fresh IDs,
+resume after kill, rollover on missing transcripts, and role isolation).
+Tests use stub CLIs and an isolated tmux socket, with no model quota.
