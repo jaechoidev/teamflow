@@ -124,10 +124,11 @@ still wins):
   (expired or deleted) the role starts a new conversation under a fresh id.
   The old transcript is never touched.
 - **Delegator (Codex)** mints its own id at first boot; the launcher
-  discovers it from `~/.codex/session_index.jsonl` (newest entry since
-  launch) and later resumes it with `codex resume <id>`, re-pinning model,
-  working directory, and full-access mode. If discovery is slow (codex still
-  booting), the registry stays `pending` and `--verify` backfills the id.
+  discovers it from `~/.codex/session_index.jsonl` (newest entry whose
+  rollout records this workspace's cwd) and later resumes it with
+  `codex resume <id>`, re-pinning model, working directory, and full-access
+  mode. If discovery is slow (codex still booting), the registry stays
+  `pending` and `--verify` backfills the id.
 - Roles never share ids, and `--continue`/`--last` are never used: panes
   share a cwd, so "most recent in directory" could resume another role's
   conversation. The registry stores ids and metadata only — no tokens, no
@@ -163,7 +164,7 @@ still wins):
 
 ## Tests
 
-`bash tests/run_all.sh` runs 173 assertions for layout order, role routing,
+`bash tests/run_all.sh` runs 180 assertions for layout order, role routing,
 environment handoff, worktrees, mailbox concurrency, send-to quoting and the
 Delegator pane guard, task claim and completion exclusivity, init
 idempotence, reattach, diagnostics, and conversation persistence (fresh IDs,
