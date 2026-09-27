@@ -10,6 +10,9 @@ TOOL_HOME=/Users/jaechoi/code/tmux-base   # where this repo lives
 cd /path/to/your-project                  # the folder adopting the tool
 git init                                  # only when it is not a repo yet
 bash "$TOOL_HOME/scripts/ai-team" init    # scaffold the tool into it
+# fresh repo only (an existing committed repo skips both lines):
+git add ai-team.conf .agents scripts/ai-team AGENTS.md
+git commit -m "chore: adopt ai-team"
 ./scripts/ai-team up                      # launch or reattach (the copy)
 ```
 
@@ -20,25 +23,26 @@ skip that line for an existing repo. `init` copies `scripts/ai-team` and
 `.agents/` (roles, lib, AGENTS-SECTION.md) into the target repo, writes
 `ai-team.conf` only when absent (yours to edit; init never overwrites
 it), and updates only the marked AGENTS.md section. `up` then needs the
-repo to have at least one commit already (a fresh `git init` has none:
-commit once, the scaffold counts). That first commit is a launcher
-requirement, not a Git limitation: role branches and worktrees are
-created from HEAD, and Git itself could make orphan worktrees even in an
-empty repo.
+repo to have at least one commit already (a fresh `git init` has none),
+so the fresh-repo step stages the scaffold paths only (`scripts/ai-team`
+by name, not all of `scripts/`), never `git add -A`. That first commit
+is a launcher requirement, not a Git limitation: role branches and
+worktrees are created from HEAD, and Git itself could make orphan
+worktrees even in an empty repo.
 
 ## Pane map
 
 Left column (top to bottom):
 
-1. **Delegator** — Codex (`gpt-6-sol`), your voice/interface
-2. **Researcher** — z.ai GLM (`glm-5.3`)
+1. **Delegator** — Codex (`gpt-6-sol`, medium), your interface
+2. **Researcher** — z.ai GLM (`glm-5.3`, max)
 
 Right column (top to bottom):
 
-1. **Reviewer & Planner** — Claude (`fable`, xhigh)
-2. **Dev Senior** — Claude (`fable`, xhigh)
-3. **Dev Mid** — Claude (`opus`, xhigh)
-4. **Dev Junior** — z.ai GLM (`glm-5.3`)
+1. **Reviewer & Planner** — Claude (`fable`, max)
+2. **Dev Senior** — Claude (`fable`, max)
+3. **Dev Mid** — Claude (`opus`, max)
+4. **Dev Junior** — z.ai GLM (`glm-5.3`, max)
 
 Equal-width columns.
 
@@ -189,7 +193,7 @@ still wins):
 
 ## Tests
 
-`bash tests/run_all.sh` runs 180 assertions for layout order, role routing,
+`bash tests/run_all.sh` covers layout order, role routing,
 environment handoff, worktrees, mailbox concurrency, send-to quoting and the
 Delegator pane guard, task claim and completion exclusivity, init
 idempotence, reattach, diagnostics, and conversation persistence (fresh IDs,
