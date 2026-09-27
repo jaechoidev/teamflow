@@ -1,0 +1,417 @@
+#!/usr/bin/env bash
+# ai-team — portable six-agent tmux workspace launcher.
+#
+# Modes:
+#   scripts/ai-team init          scaffold this tool into the current git repo
+#                                 (.agents/, ai-team.conf if absent, AGENTS.md
+#                                 marked section, ./scripts/ai-team copy)
+#   scripts/ai-team up            launch or reattach to the workspace
+#   scripts/ai-team --verify      show pane liveness + role acknowledgements
+#   scripts/ai-team --check-models  probe configured models (spends a little
+#                                 model quota; clean environment)
+#   scripts/ai-team --kill        kill the workspace session
+#
+# Flags: --no-attach (build detached), -h|--help.
+#
+# Design notes:
+# - Everything is derived from the CURRENT repo (git rev-parse); no
+#   user-specific absolute paths are embedded. API keys never appear here:
+#   z.ai panes source the env file named in ai-team.conf ([workspace] zai_env).
+# - Model availability: binary presence is checked always; whether a MODEL id
+#   actually works for your account is only knowable live — use
+#   --check-models. Missing configuration is reported, never silently
+#   substituted.
+set -u
+
+TOOL_HOME="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+
+die() { echo "ai-team: $*" >&2; exit 1; }
+say() { echo "ai-team: $*" >&2; }
+
+usage() { sed -n '2,20p' "$0" | sed 's/^# \{0,1\}//'; }
+
+# ---------- helpers ------------------------------------------------------------
+
+shell_quote() { # POSIX single-quote; safe under sh/bash/zsh pane shells
+  printf "'%s'" "$(printf '%s' "$1" | sed "s/'/'\\\\''/g")"
+}
+
+repo_root() {
+  git rev-parse --show-toplevel 2>/dev/null || die "not inside a git repository — cd into the target project (or run 'ai-team init' here after git init)"
+}
+
+git_common_dir() { # absolute path to the shared .git dir (works in worktrees)
+  git -C "$1" rev-parse --path-format=absolute --git-common-dir 2>/dev/null \
+    || die "cannot resolve git common dir for $1"
+}
+
+# conf_read <conf-file> -> TSV on stdout:
+#   workspace line: prefix<TAB>zai_env<TAB>ttl
+#   one line per pane (in order): role<TAB>label<TAB>cli<TAB>model<TAB>effort<TAB>worktree
+conf_read() {
+  python3 - "$1" <<'PY'
+import sys, configparser, os
+cp = configparser.ConfigParser()
+cp.read(sys.argv[1])
+w = cp["workspace"] if cp.has_section("workspace") else {}
+prefix = w.get("session_prefix", "at")
+zai_env = w.get("zai_env", "~/.zai/env.sh")
+ttl = w.get("task_ttl_days", "7")
+print("%s\t%s\t%s" % (prefix, zai_env, ttl))
+for sec in cp.sections():
+    if not sec.startswith("pane."):
+        continue
+    role = sec[len("pane."):]
+    p = cp[sec]
+    print("\t".join([
+        role,
+        p.get("label", role),
+        p.get("cli", ""),
+        p.get("model", ""),
+        p.get("effort", ""),
+        p.get("worktree", "no"),
+    ]))
+PY
+}
+
+session_name() { # $1 root, $2 prefix
+  local h base
+  h=$(printf '%s' "$1" | python3 -c 'import sys,hashlib; print(hashlib.md5(sys.stdin.buffer.read()).hexdigest()[:8])')
+  # tmux parses '.' and ':' in targets as window separators — strip them.
+  base=$(basename "$1" | tr '.:' '--')
+  printf '%s-%s-%s' "$2" "$base" "$h"
+}
+
+ensure_exclude() { # $1 common-dir  $2 pattern — keep runtime state out of git status
+  local ex="$1/info/exclude"
+  touch "$ex"
+  grep -qxF "$2" "$ex" 2>/dev/null || echo "$2" >> "$ex"
+}
+
+# ---------- init ---------------------------------------------------------------
+
+cmd_init() {
+  local root src
+  root="$(repo_root)"
+  src="$TOOL_HOME"
+  [ -f "$src/.agents/AGENTS-SECTION.md" ] || die "tool files incomplete at $src (missing .agents/AGENTS-SECTION.md)"
+
+  mkdir -p "$root/.agents/roles" "$root/.agents/lib" "$root/scripts"
+  cp "$src"/.agents/roles/*.md "$root/.agents/roles/"
+  cp "$src"/.agents/lib/task.sh "$src"/.agents/lib/pane.sh "$root/.agents/lib/"
+  cp "$src/.agents/AGENTS-SECTION.md" "$root/.agents/AGENTS-SECTION.md"
+  cp "$src/scripts/ai-team" "$root/scripts/ai-team"
+  chmod +x "$root/scripts/ai-team" "$root/.agents/lib/"*.sh
+
+  if [ ! -f "$root/ai-team.conf" ]; then
+    cp "$src/ai-team.conf" "$root/ai-team.conf"
+    say "wrote ai-team.conf (user-owned: edit models/panes here; init never overwrites it)"
+  else
+    say "ai-team.conf already present — left untouched"
+  fi
+
+  # AGENTS.md marked section: replace if present, else append; never touch
+  # anything outside the markers.
+  python3 - "$root" <<'PY'
+import sys, os, re
+root = sys.argv[1]
+section = open(os.path.join(root, ".agents/AGENTS-SECTION.md")).read()
+ag = os.path.join(root, "AGENTS.md")
+s = open(ag).read() if os.path.exists(ag) else ""
+s = re.sub(r"\n?# >>> ai-team >>>.*?# <<< ai-team <<<\n?", "\n", s, flags=re.S)
+s = s.rstrip("\n") + ("\n\n" if s.strip() else "") + section.rstrip("\n") + "\n"
+open(ag, "w").write(s)
+PY
+
+  local common
+  common="$(git_common_dir "$root")"
+  ensure_exclude "$common" ".ai-team-worktrees/"
+  ensure_exclude "$common" ".git/ai-team/"   # no-op for info/exclude clarity
+
+  say "initialized in $root"
+  echo "next: edit ai-team.conf if needed, then run ./scripts/ai-team up" >&2
+}
+
+# ---------- up -----------------------------------------------------------------
+
+cmd_up() {
+  local mode_attach=1
+  [ "${1:-}" = "--no-attach" ] && mode_attach=0
+
+  command -v tmux >/dev/null 2>&1 || die "tmux not found (brew install tmux / apt install tmux)"
+  command -v python3 >/dev/null 2>&1 || die "python3 not found"
+
+  local root conf
+  root="$(repo_root)"
+  conf="$root/ai-team.conf"
+  [ -f "$conf" ] || conf="$TOOL_HOME/ai-team.conf"
+  [ -f "$conf" ] || die "no ai-team.conf (run: scripts/ai-team init)"
+  local confdesc="tool-home"
+  [ "$conf" = "$root/ai-team.conf" ] && confdesc="project"
+
+  local confout prefix zai_env_raw ttl
+  confout="$(conf_read "$conf")" || die "cannot parse $conf"
+  prefix="$(printf '%s' "$confout"   | head -1 | cut -f1)"
+  zai_env_raw="$(printf '%s' "$confout" | head -1 | cut -f2)"
+  ttl="$(printf '%s' "$confout"      | head -1 | cut -f3)"
+  local zai_env="${zai_env_raw/#\~/$HOME}"
+
+  local sess
+  sess="$(session_name "$root" "$prefix")"
+
+  if tmux has-session -t "=$sess" 2>/dev/null; then
+    say "session $sess already running — reattaching (no duplicate launched)"
+    [ "$mode_attach" = 1 ] && exec tmux attach-session -t "=$sess"
+    echo "$sess"
+    return 0
+  fi
+
+  # ---- preflight: config + CLIs (fail before creating anything) -------------
+  local tsv roles="" missing=""
+  tsv="$(printf '%s' "$confout" | tail -n +2)"
+  [ "$(printf '%s' "$tsv" | grep -c .)" -eq 6 ] \
+    || die "expected 6 [pane.*] sections in $conf ($confdesc), found $(printf '%s' "$tsv" | grep -c .)"
+
+  while IFS="$(printf '\t')" read -r role label cli model effort worktree; do
+    roles="$roles $role"
+    [ -n "$cli" ] || die "[$role] cli is empty in $conf"
+    case "$cli" in
+      codex|claude) command -v "$cli" >/dev/null 2>&1 || missing="$missing $cli" ;;
+      zai)
+        command -v claude >/dev/null 2>&1 || missing="$missing claude(for zai)"
+        [ -f "$zai_env" ] || die "[$role] cli=zai but env file not found: $zai_env (set [workspace] zai_env in $conf)"
+        ;;
+      *) die "[$role] unknown cli '$cli' (expected codex | claude | zai)" ;;
+    esac
+    [ -n "$model" ] || die "[$role] model is empty — set it in $conf (no silent defaults)"
+  done <<EOF
+$tsv
+EOF
+  [ -z "$missing" ] || die "required CLI(s) not on PATH:$missing"
+  [ -n "$(git -C "$root" rev-parse HEAD 2>/dev/null)" ] \
+    || die "repo has no commits yet — make an initial commit first (worktrees need HEAD)"
+
+  # Resolve CLIs to absolute paths NOW: pane shells may rewrite PATH
+  # (e.g. ~/.zshenv prepending ~/.local/bin), which would otherwise swap the
+  # binary under us between launch and boot.
+  local CODEX_BIN CLAUDE_BIN
+  CODEX_BIN="$(command -v codex)"
+  CLAUDE_BIN="$(command -v claude)"
+
+  # ---- workspace: mailbox + worktrees ----------------------------------------
+  local common mailbox
+  common="$(git_common_dir "$root")"
+  mailbox="$common/ai-team"
+  mkdir -p "$mailbox/tasks" "$mailbox/acks" || die "cannot create mailbox at $mailbox"
+  ensure_exclude "$common" ".ai-team-worktrees/"
+
+  local role worktree wt_root branch
+  wt_root="$root/.ai-team-worktrees"
+  while IFS="$(printf '\t')" read -r role label cli model effort worktree; do
+    [ "$worktree" = "yes" ] || continue
+    branch="ai-team/$role"
+    if git -C "$wt_root/$role" rev-parse --git-dir >/dev/null 2>&1; then
+      say "worktree exists: $wt_root/$role (reused, untouched)"
+      continue
+    fi
+    if git -C "$root" show-ref --verify --quiet "refs/heads/$branch"; then
+      git -C "$root" worktree add "$wt_root/$role" "$branch" >/dev/null \
+        || die "cannot add worktree $wt_root/$role on existing branch $branch (left untouched)"
+    else
+      git -C "$root" worktree add -b "$branch" "$wt_root/$role" >/dev/null \
+        || die "cannot create worktree/branch $branch"
+    fi
+    say "worktree ready: $wt_root/$role (branch $branch)"
+  done <<EOF
+$tsv
+EOF
+
+  # ---- pane command builder ---------------------------------------------------
+  local lib_dir="$root/.agents/lib"
+  [ -d "$lib_dir" ] || lib_dir="$TOOL_HOME/.agents/lib"
+
+  pane_cmd() { # role cli model effort cwd rolefile -> pane shell command
+    local prole="$1" pcli="$2" pmodel="$3" peffort="$4" pcwd="$5" pfile="$6"
+    local envs qfile qmailbox qlib
+    qfile="$(shell_quote "$pfile")"
+    qmailbox="$(shell_quote "$mailbox")"
+    qlib="$(shell_quote "$lib_dir")"
+    # export (a shell builtin) rather than the env binary: the zai pane starts
+    # with `.` (source), which env cannot execute.
+    envs="export AGENT_ROLE=$(shell_quote "$prole") AGENT_ID=$(shell_quote "$sess-$prole") \
+AGENT_ROLE_FILE=$qfile AGENT_MAILBOX=$qmailbox AGENT_LIB_DIR=$qlib;"
+    local base="" bin
+    case "$pcli" in
+      codex)
+        bin="$(shell_quote "$CODEX_BIN")"
+        base="$bin -m $(shell_quote "$pmodel") \
+\"You are the team Delegator. Read $(shell_quote "$pfile") and adopt the role. \
+Then read AGENTS.md in $(shell_quote "$pcwd"), run: bash $qlib/task.sh ack, and reply READY only.\""
+        ;;
+      claude)
+        bin="$(shell_quote "$CLAUDE_BIN")"
+        base="$bin --model $(shell_quote "$pmodel")"
+        [ -n "$peffort" ] && base="$base --effort $(shell_quote "$peffort")"
+        base="$base --append-system-prompt-file $qfile"
+        ;;
+      zai)
+        bin="$(shell_quote "$CLAUDE_BIN")"
+        base=". $(shell_quote "$zai_env") && $bin --model $(shell_quote "$pmodel")"
+        [ -n "$peffort" ] && base="$base --effort $(shell_quote "$peffort")"
+        base="$base --append-system-prompt-file $qfile"
+        ;;
+    esac
+    printf '%s %s' "$envs" "$base"
+  }
+
+  # ---- build the tmux session -------------------------------------------------
+  say "building session $sess (panes will show role labels; CLIs boot in place)"
+  local -a order_roles order_cmds order_cwds
+  local line idx=0
+  while IFS="$(printf '\t')" read -r role label cli model effort worktree; do
+    order_roles[$idx]="$role"
+    local cwd="$root"
+    [ "$worktree" = "yes" ] && cwd="$wt_root/$role"
+    order_cwds[$idx]="$cwd"
+    order_cmds[$idx]="$(pane_cmd "$role" "$cli" "$model" "$effort" "$cwd" "$root/.agents/roles/$role.md")"
+    [ -f "$root/.agents/roles/$role.md" ] || order_cmds[$idx]="$(pane_cmd "$role" "$cli" "$model" "$effort" "$cwd" "$TOOL_HOME/.agents/roles/$role.md")"
+    idx=$((idx + 1))
+  done <<EOF
+$tsv
+EOF
+
+  pane_ids_of() { tmux list-panes -t "=$sess" -F '#{pane_id}' 2>/dev/null | sort; }
+  diff_new_pane() { # prints the pane id added since $1 (sorted list)
+    comm -13 <(printf '%s\n' "$1") <(pane_ids_of) | head -1
+  }
+
+  # Layout: 2 columns x 3 rows, reading order TL TR / L2 R2 / L3 R3.
+  #   p0 left col; split -h -> p1 right col;
+  #   left:  split p0 -v -p 67 -> p2, split p2 -v -p 50 -> p4
+  #   right: split p1 -v -p 67 -> p3, split p3 -v -p 50 -> p5
+  local before pid
+  tmux new-session -d -s "$sess" -n team -c "${order_cwds[0]}" "${order_cmds[0]}"
+  local p0 p1 p2 p3 p4 p5
+  p0="$(pane_ids_of)"
+  tmux rename-window -t "=$sess" "team"
+  tmux set-window-option -t "=$sess" remain-on-exit on >/dev/null
+
+  before="$(pane_ids_of)"
+  tmux split-window -d -h -p 50 -t "$p0" -c "${order_cwds[1]}" "${order_cmds[1]}"
+  p1="$(diff_new_pane "$before")"
+
+  before="$(pane_ids_of)"
+  tmux split-window -d -v -p 67 -t "$p0" -c "${order_cwds[2]}" "${order_cmds[2]}"
+  p2="$(diff_new_pane "$before")"
+
+  before="$(pane_ids_of)"
+  tmux split-window -d -v -p 50 -t "$p2" -c "${order_cwds[4]}" "${order_cmds[4]}"
+  p4="$(diff_new_pane "$before")"
+
+  before="$(pane_ids_of)"
+  tmux split-window -d -v -p 67 -t "$p1" -c "${order_cwds[3]}" "${order_cmds[3]}"
+  p3="$(diff_new_pane "$before")"
+
+  before="$(pane_ids_of)"
+  tmux split-window -d -v -p 50 -t "$p3" -c "${order_cwds[5]}" "${order_cmds[5]}"
+  p5="$(diff_new_pane "$before")"
+
+  local _pid
+  for _pid in "$p0" "$p1" "$p2" "$p3" "$p4" "$p5"; do
+    case "$_pid" in %*) ;; *) tmux kill-session -t "=$sess" 2>/dev/null
+        die "pane id capture failed (got '$_pid') — this is a bug; session rolled back" ;; esac
+  done
+
+  # Labels + pane registry (role -> pane id, used by pane.sh)
+  local -a pids=("$p0" "$p1" "$p2" "$p3" "$p4" "$p5")
+  : > "$mailbox/panes.tsv"
+  local i labels
+  i=0
+  while IFS="$(printf '\t')" read -r role label cli model effort worktree; do
+    tmux select-pane -t "${pids[$i]}" -T "$label"
+    printf '%s\t%s\n' "$role" "${pids[$i]}" >> "$mailbox/panes.tsv"
+    i=$((i + 1))
+  done <<EOF
+$tsv
+EOF
+  tmux set-window-option -t "=$sess" pane-border-status top >/dev/null
+
+  say "workspace up: $sess"
+  say "delegator = pane $p0 (codex). Workers idle until addressed — role files are pre-loaded via system prompt (claude/zai) or the startup prompt (codex)."
+  say "voice: the Codex CLI has no voice mode; use Codex.app separately if you need voice."
+  if [ "$mode_attach" = 1 ]; then
+    exec tmux attach-session -t "=$sess"
+  fi
+  echo "$sess"
+}
+
+# ---------- verify / check-models / kill ----------------------------------------
+
+cmd_verify() {
+  local root confout prefix sess
+  root="$(repo_root)"
+  confout="$(conf_read "$root/ai-team.conf" 2>/dev/null || conf_read "$TOOL_HOME/ai-team.conf")"
+  prefix="$(printf '%s' "$confout" | head -1 | cut -f1)"
+  sess="$(session_name "$root" "$prefix")"
+  local mailbox; mailbox="$(git_common_dir "$root")/ai-team"
+  echo "session: $sess ($(tmux has-session -t "=$sess" 2>/dev/null && echo up || echo DOWN))"
+  while IFS="$(printf '\t')" read -r role label cli model effort worktree; do
+    local pid ack="no" alive="gone"
+    pid=$(awk -F '\t' -v r="$role" '$1 == r {print $2; exit}' "$mailbox/panes.tsv" 2>/dev/null)
+    [ -n "$pid" ] && tmux list-panes -a -F '#{pane_id}' 2>/dev/null | grep -qx "$pid" && alive="pane $pid"
+    [ -f "$mailbox/acks/$role.json" ] && ack="yes ($(sed -n 's/^time: //p' "$mailbox/acks/$role.json"))"
+    printf '%-12s %-22s ack=%-28s %s\n' "$role" "$alive" "$ack" "$label"
+  done <<EOF
+$(printf '%s' "$confout" | tail -n +2)
+EOF
+  echo "ack=no means the pane has not yet acted on its first message (role file is still pre-loaded via system prompt / startup prompt)."
+}
+
+cmd_check_models() {
+  local root confout
+  root="$(repo_root)"
+  confout="$(conf_read "$root/ai-team.conf" 2>/dev/null || conf_read "$TOOL_HOME/ai-team.conf")"
+  echo "probing models with one tiny request each (costs a little quota; clean env)"
+  while IFS="$(printf '\t')" read -r role label cli model effort worktree; do
+    case "$cli" in
+      claude|zai)
+        if out=$(env -i HOME="$HOME" PATH="$PATH" \
+                 claude --model "$model" --print "reply ok" 2>&1 </dev/null) \
+           && printf '%s' "$out" | grep -qi ok; then
+          printf '%-12s %-10s %-12s OK\n' "$role" "$cli" "$model"
+        else
+          printf '%-12s %-10s %-12s UNAVAILABLE: %s\n' "$role" "$cli" "$model" \
+            "$(printf '%s' "$out" | tail -1 | cut -c1-120)"
+        fi
+        ;;
+      codex)
+        printf '%-12s %-10s %-12s not probed (codex has no cheap model check; models verified at first use)\n' "$role" "$cli" "$model"
+        ;;
+    esac
+  done <<EOF
+$(printf '%s' "$confout" | tail -n +2)
+EOF
+}
+
+cmd_kill() {
+  local root confout prefix sess
+  root="$(repo_root)"
+  confout="$(conf_read "$root/ai-team.conf" 2>/dev/null || conf_read "$TOOL_HOME/ai-team.conf")"
+  prefix="$(printf '%s' "$confout" | head -1 | cut -f1)"
+  sess="$(session_name "$root" "$prefix")"
+  tmux kill-session -t "=$sess" 2>/dev/null && say "killed $sess" || say "no session $sess"
+  say "worktrees and branches are left in place (inspect .ai-team-worktrees/)"
+}
+
+# ---------- main -----------------------------------------------------------------
+
+case "${1:-up}" in
+  init)          shift; cmd_init "$@" ;;
+  up)            shift; cmd_up "${1:-}" ;;
+  --no-attach)   cmd_up --no-attach ;;
+  --verify)      shift; cmd_verify "$@" ;;
+  --check-models) shift; cmd_check_models "$@" ;;
+  --kill)        shift; cmd_kill "$@" ;;
+  -h|--help)     usage ;;
+  *)             usage; die "unknown argument: $1" ;;
+esac
