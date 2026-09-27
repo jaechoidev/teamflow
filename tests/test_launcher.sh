@@ -24,6 +24,9 @@ echo hello > file.txt && git add . && git commit -qm "initial"
 
 # --- init ----------------------------------------------------------------------
 bash "$TOOL/scripts/ai-team" init 2>/dev/null
+# Fixture determinism: init copies this checkout's ai-team.conf, so a locally
+# configured delegator effort would leak into the empty-effort case below.
+sed -i '' '/^\[pane\.delegator\]/,/^\[pane\./ s|^effort *=.*|effort =|' ai-team.conf
 for f in ai-team.conf scripts/ai-team .agents/AGENTS-SECTION.md \
          .agents/lib/task.sh .agents/lib/pane.sh \
          .agents/roles/delegator.md .agents/roles/dev-junior.md; do
