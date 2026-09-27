@@ -22,6 +22,8 @@ Rules:
 - Results are read from task records, never assumed from pane text.
 - Nothing is ever typed into the Delegator pane: `pane.sh send-to delegator`
   is rejected; completions surface via `task.sh inbox delegator`.
+- Only the Delegator deletes task records (`task.sh clean`); `done` keeps
+  results readable.
 - Developers work in separate worktrees (`.ai-team-worktrees/<role>`,
   branches `ai-team/<role>`). No merges, commits-to-main, or pushes without
   the user's approval. Avoid overlapping concurrent edits; coordinate scope.

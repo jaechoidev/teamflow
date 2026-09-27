@@ -51,7 +51,8 @@ says exactly what and where to fix it.
 - **Verify panes**: `./scripts/ai-team --verify` (liveness + role acks)
 - **Stop**: `./scripts/ai-team --kill` (session only; worktrees and branches
   stay, nothing is merged/pushed/deleted)
-- **Old task records**: `bash .agents/lib/task.sh clean [days]`
+- **Old task records**: `bash .agents/lib/task.sh clean [days]` (Delegator
+  only; prunes done tasks older than the given days)
 
 ## Integrating approved work
 
@@ -120,7 +121,7 @@ own.
 
 ## Tests
 
-`bash tests/run_all.sh` — 118 assertions: layout order, role routing, env
+`bash tests/run_all.sh` — 121 assertions: layout order, role routing, env
 handoff, worktrees, mailbox concurrency, send-to quoting (incl. the
 delegator-pane guard), task claim/completion exclusivity, init
 idempotence, reattach, diagnostics. Uses stub CLIs and an isolated tmux

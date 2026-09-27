@@ -138,10 +138,17 @@ assert_eq "1" "$(grep -c 'done by' "$AGENT_MAILBOX/tasks/$idr2/events" || true)"
 assert_eq "1" "$(wc -l < "$AGENT_MAILBOX/tasks/$idr2/result.md" | tr -d ' ')" "race result is a single intact line"
 rm -f "$p"/dwin_*
 
-# clean prunes only done tasks
+# clean is delegator-only
+rc=0; out=$(AGENT_ROLE=dev-mid bash "$TASK" clean 7 2>&1) || rc=$?
+assert_eq "1" "$rc" "worker clean exits nonzero"
+assert_contains "$out" "delegator" "worker clean message names the delegator"
+rc=0; out=$(AGENT_ROLE= bash "$TASK" clean 7 2>&1) || rc=$?
+assert_eq "1" "$rc" "roleless clean exits nonzero"
+
+# clean prunes only done tasks (delegator)
 mkdir -p "$AGENT_MAILBOX/tasks/T-9000"; echo "done" > "$AGENT_MAILBOX/tasks/T-9000/status"
 touch -t 202001010000 "$AGENT_MAILBOX/tasks/T-9000"
-out=$(bash "$TASK" clean 7)
+out=$(AGENT_ROLE=delegator bash "$TASK" clean 7)
 assert_eq "1" "$(echo "$out" | sed 's/pruned \([0-9]*\) .*/\1/')" "clean prunes the old done task"
 assert_eq "0" "$([ -d "$AGENT_MAILBOX/tasks/T-9000" ] && echo 1 || echo 0)" "old done task removed"
 assert_eq "1" "$([ -d "$AGENT_MAILBOX/tasks/T-0001" ] && echo 1 || echo 0)" "recent done task kept (mtime now)"

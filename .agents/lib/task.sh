@@ -18,7 +18,8 @@
 #                             also completed tasks it dispatched
 #   list                      list all tasks (one line each)
 #   ack                       record that this role loaded its instructions
-#   clean [days]              prune done tasks older than N days (default 7)
+#   clean [days]              prune done tasks older than N days (default 7);
+#                             delegator only — workers never delete records
 #
 # Concurrency: one directory per task; creation is an atomic mkdir race;
 # claims likewise: `take` and `done` both gate on the task's claim/
@@ -170,6 +171,10 @@ case "$cmd" in
     echo "acked: $role"
     ;;
   clean)
+    # Deletion is the delegator's call alone: results stay readable after
+    # `done` (results are immutable there), and only retention pruning by
+    # the delegator ever removes a record.
+    [ "${AGENT_ROLE:-}" = "delegator" ] || fail "clean is restricted to the delegator (workers never delete task records)"
     days="${1:-7}"
     [ "$days" -gt 0 ] 2>/dev/null || fail "days must be a positive integer"
     cutoff=$(date -v-${days}d +%s 2>/dev/null || date -d "-${days} days" +%s)

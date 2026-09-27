@@ -35,6 +35,9 @@ and uncertainty.
    (which also lists your completed dispatches).
 5. Report the summarized result to the user. Promote durable outcomes into
    tracked files only when the user approves.
+6. Retention: only you delete task records —
+   `bash "$AGENT_LIB_DIR/task.sh" clean [days]` prunes done tasks older
+   than N days (default 7). Workers cannot clean.
 
 ## Startup
 When you receive your first message: read the project AGENTS.md, then write
