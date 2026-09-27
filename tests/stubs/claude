@@ -1,11 +1,17 @@
 #!/usr/bin/env bash
 # Stub CLI (quota-free): logs invocation + role env, then idles so the pane
-# stays alive. Used by tests via PATH injection.
+# stays alive. Used by tests via PATH injection. --print probes (used by
+# scripts/ai-team --check-models) log the routing env, reply ok, and exit.
 log="${STUB_LOG:?set STUB_LOG}"
-{ echo "=== $(basename "$0") $*"
+{
+  echo "=== $(basename "$0") $*"
   echo "AGENT_ROLE=$AGENT_ROLE AGENT_ID=$AGENT_ID"
   echo "ROLE_FILE=$AGENT_ROLE_FILE"
   echo "MAILBOX=$AGENT_MAILBOX"
   echo "cwd=$PWD"
+  echo "ROUTING BASE_URL=${ANTHROPIC_BASE_URL:-unset} AUTH_TOKEN=${ANTHROPIC_AUTH_TOKEN:+SET} MODEL=${ANTHROPIC_MODEL:-unset}"
 } >> "$log"
+case " $* " in
+  *" --print "*) echo ok; exit 0 ;;
+esac
 exec sleep 600

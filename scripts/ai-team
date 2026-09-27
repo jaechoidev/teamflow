@@ -8,7 +8,7 @@
 #   scripts/ai-team up            launch or reattach to the workspace
 #   scripts/ai-team --verify      show pane liveness + role acknowledgements
 #   scripts/ai-team --check-models  probe configured models (spends a little
-#                                 model quota; clean environment)
+#                                 quota; clean env, zai panes source zai_env)
 #   scripts/ai-team --kill        kill the workspace session
 #
 # Flags: --no-attach (build detached), -h|--help.
@@ -88,6 +88,23 @@ ensure_exclude() { # $1 common-dir  $2 pattern — keep runtime state out of git
   grep -qxF "$2" "$ex" 2>/dev/null || echo "$2" >> "$ex"
 }
 
+# Routing env vars that must never leak into claude panes: a shell or tmux
+# server carrying z.ai proxy routing would silently send native-model panes to
+# that endpoint with that token. zai panes re-source their env file right
+# after the unset, so clearing is safe for every pane that runs claude.
+# Native API-key-env users: put your key in `claude`'s own config, not the
+# environment, or extend this list.
+CLAUDE_ROUTING_VARS="ANTHROPIC_BASE_URL ANTHROPIC_AUTH_TOKEN ANTHROPIC_API_KEY ANTHROPIC_MODEL ANTHROPIC_SMALL_FAST_MODEL ANTHROPIC_DEFAULT_HAIKU_MODEL ANTHROPIC_DEFAULT_SONNET_MODEL ANTHROPIC_DEFAULT_OPUS_MODEL ANTHROPIC_CUSTOM_HEADERS API_TIMEOUT_MS"
+
+install_file() { # $1 src $2 dst — user-edited files win; shipped copy staged as <dst>.new
+  if [ ! -e "$2" ]; then
+    cp "$1" "$2"
+  elif ! cmp -s "$1" "$2"; then
+    cp "$1" "$2.new"
+    say "$(basename "$2") already exists and differs — kept yours; shipped copy at $2.new"
+  fi
+}
+
 # ---------- init ---------------------------------------------------------------
 
 cmd_init() {
@@ -97,11 +114,16 @@ cmd_init() {
   [ -f "$src/.agents/AGENTS-SECTION.md" ] || die "tool files incomplete at $src (missing .agents/AGENTS-SECTION.md)"
 
   mkdir -p "$root/.agents/roles" "$root/.agents/lib" "$root/scripts"
-  cp "$src"/.agents/roles/*.md "$root/.agents/roles/"
-  cp "$src"/.agents/lib/task.sh "$src"/.agents/lib/pane.sh "$root/.agents/lib/"
-  cp "$src/.agents/AGENTS-SECTION.md" "$root/.agents/AGENTS-SECTION.md"
-  cp "$src/scripts/ai-team" "$root/scripts/ai-team"
+  local f
+  for f in "$src"/.agents/roles/*.md; do
+    install_file "$f" "$root/.agents/roles/$(basename "$f")"
+  done
+  install_file "$src/.agents/lib/task.sh" "$root/.agents/lib/task.sh"
+  install_file "$src/.agents/lib/pane.sh" "$root/.agents/lib/pane.sh"
+  install_file "$src/.agents/AGENTS-SECTION.md" "$root/.agents/AGENTS-SECTION.md"
+  install_file "$src/scripts/ai-team" "$root/scripts/ai-team"
   chmod +x "$root/scripts/ai-team" "$root/.agents/lib/"*.sh
+  [ -f "$root/scripts/ai-team.new" ] && chmod +x "$root/scripts/ai-team.new"
 
   if [ ! -f "$root/ai-team.conf" ]; then
     cp "$src/ai-team.conf" "$root/ai-team.conf"
@@ -126,7 +148,6 @@ PY
   local common
   common="$(git_common_dir "$root")"
   ensure_exclude "$common" ".ai-team-worktrees/"
-  ensure_exclude "$common" ".git/ai-team/"   # no-op for info/exclude clarity
 
   say "initialized in $root"
   echo "next: edit ai-team.conf if needed, then run ./scripts/ai-team up" >&2
@@ -244,19 +265,20 @@ AGENT_ROLE_FILE=$qfile AGENT_MAILBOX=$qmailbox AGENT_LIB_DIR=$qlib;"
     case "$pcli" in
       codex)
         bin="$(shell_quote "$CODEX_BIN")"
-        base="$bin -m $(shell_quote "$pmodel") \
+        # Full access mode (user request): no approval prompts, no sandbox.
+        base="$bin --dangerously-bypass-approvals-and-sandbox -m $(shell_quote "$pmodel") \
 \"You are the team Delegator. Read $(shell_quote "$pfile") and adopt the role. \
 Then read AGENTS.md in $(shell_quote "$pcwd"), run: bash $qlib/task.sh ack, and reply READY only.\""
         ;;
       claude)
         bin="$(shell_quote "$CLAUDE_BIN")"
-        base="$bin --model $(shell_quote "$pmodel")"
+        base="unset $CLAUDE_ROUTING_VARS; $bin --model $(shell_quote "$pmodel")"
         [ -n "$peffort" ] && base="$base --effort $(shell_quote "$peffort")"
         base="$base --append-system-prompt-file $qfile"
         ;;
       zai)
         bin="$(shell_quote "$CLAUDE_BIN")"
-        base=". $(shell_quote "$zai_env") && $bin --model $(shell_quote "$pmodel")"
+        base="unset $CLAUDE_ROUTING_VARS; . $(shell_quote "$zai_env") && $bin --model $(shell_quote "$pmodel")"
         [ -n "$peffort" ] && base="$base --effort $(shell_quote "$peffort")"
         base="$base --append-system-prompt-file $qfile"
         ;;
@@ -291,10 +313,21 @@ EOF
   #   right: split p1 -v -p 67 -> p3, split p3 -v -p 50 -> p5
   local before pid
   tmux new-session -d -s "$sess" -n team -c "${order_cwds[0]}" "${order_cmds[0]}"
+  tmux has-session -t "=$sess" 2>/dev/null \
+    || die "pane boot failed: '${order_roles[0]}' exited immediately (session rolled back). Run its pane command by hand to see why — common causes: invalid model id, CLI auth/config error."
   local p0 p1 p2 p3 p4 p5
   p0="$(pane_ids_of)"
   tmux rename-window -t "=$sess" "team"
   tmux set-window-option -t "=$sess" remain-on-exit on >/dev/null
+
+  # Keep routing vars out of the tmux environment as well: new panes merge the
+  # server-global env back in, so session-only clearing would still leak. The
+  # in-pane unset above is authoritative; this is hygiene for later panes.
+  local v
+  for v in $CLAUDE_ROUTING_VARS; do
+    tmux set-environment -u -t "=$sess" "$v" 2>/dev/null
+    tmux set-environment -gu "$v" 2>/dev/null
+  done
 
   before="$(pane_ids_of)"
   tmux split-window -d -h -p 50 -t "$p0" -c "${order_cwds[1]}" "${order_cmds[1]}"
@@ -316,10 +349,14 @@ EOF
   tmux split-window -d -v -p 50 -t "$p3" -c "${order_cwds[5]}" "${order_cmds[5]}"
   p5="$(diff_new_pane "$before")"
 
-  local _pid
+  local _pid _i=0
   for _pid in "$p0" "$p1" "$p2" "$p3" "$p4" "$p5"; do
-    case "$_pid" in %*) ;; *) tmux kill-session -t "=$sess" 2>/dev/null
-        die "pane id capture failed (got '$_pid') — this is a bug; session rolled back" ;; esac
+    case "$_pid" in
+      %*) ;;
+      *) tmux kill-session -t "=$sess" 2>/dev/null
+         die "pane boot failed: '${order_roles[$_i]}' exited immediately or its pane id could not be captured (session rolled back). Run the pane command by hand to see why." ;;
+    esac
+    _i=$((_i + 1))
   done
 
   # Labels + pane registry (role -> pane id, used by pane.sh)
@@ -368,15 +405,39 @@ EOF
 }
 
 cmd_check_models() {
-  local root confout
+  local root conf confout zai_env_raw zai_env
   root="$(repo_root)"
-  confout="$(conf_read "$root/ai-team.conf" 2>/dev/null || conf_read "$TOOL_HOME/ai-team.conf")"
-  echo "probing models with one tiny request each (costs a little quota; clean env)"
+  conf="$root/ai-team.conf"
+  [ -f "$conf" ] || conf="$TOOL_HOME/ai-team.conf"
+  confout="$(conf_read "$conf")" || die "cannot parse $conf"
+  zai_env_raw="$(printf '%s' "$confout" | head -1 | cut -f2)"
+  zai_env="${zai_env_raw/#\~/$HOME}"
+  # cli=zai panes must probe through the configured env file — refuse clearly
+  # (same rule as `up`) rather than probing the default endpoint.
+  if printf '%s' "$confout" | tail -n +2 | awk -F '\t' '$3 == "zai"' | grep -q .; then
+    [ -f "$zai_env" ] || die "cli=zai configured but env file not found: $zai_env (set [workspace] zai_env in $conf)"
+  fi
+  echo "probing models with one tiny request each (costs a little quota; claude panes: clean env, zai panes: env file)"
+  local -a probe_env
   while IFS="$(printf '\t')" read -r role label cli model effort worktree; do
+    probe_env=(env -i HOME="$HOME" PATH="$PATH")
+    # STUB_LOG is a test-suite hook (stub CLIs log there); unset in real use.
+    [ -n "${STUB_LOG:-}" ] && probe_env+=(STUB_LOG="$STUB_LOG")
     case "$cli" in
-      claude|zai)
-        if out=$(env -i HOME="$HOME" PATH="$PATH" \
+      claude)
+        if out=$("${probe_env[@]}" \
                  claude --model "$model" --print "reply ok" 2>&1 </dev/null) \
+           && printf '%s' "$out" | grep -qi ok; then
+          printf '%-12s %-10s %-12s OK\n' "$role" "$cli" "$model"
+        else
+          printf '%-12s %-10s %-12s UNAVAILABLE: %s\n' "$role" "$cli" "$model" \
+            "$(printf '%s' "$out" | tail -1 | cut -c1-120)"
+        fi
+        ;;
+      zai)
+        if out=$("${probe_env[@]}" \
+                 bash -c '. "$1" && exec claude --model "$2" --print "reply ok"' \
+                 _ "$zai_env" "$model" 2>&1 </dev/null) \
            && printf '%s' "$out" | grep -qi ok; then
           printf '%-12s %-10s %-12s OK\n' "$role" "$cli" "$model"
         else
