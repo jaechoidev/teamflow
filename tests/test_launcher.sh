@@ -127,6 +127,7 @@ assert_contains "$GEO" "Dev Mid (claude opus) Dev Junior" "row3 order"
 
 # stubs saw the right env + cwds
 LOG=$(cat "$STUB_LOG")
+assert_eq "0" "$(grep -c 'model_reasoning_effort' "$STUB_LOG" || true)" "empty codex effort adds no -c override"
 for role in delegator researcher reviewer dev-senior dev-mid dev-junior; do
   assert_contains "$LOG" "AGENT_ROLE=$role" "stub env for $role"
 done
@@ -251,6 +252,8 @@ tmux has-session -t "=$SESS" 2>/dev/null && { echo "FAIL: session survived kill"
 [ -d "$TGT/.ai-team-worktrees/dev-mid" ] && _PASS=$((_PASS+1)) || { echo "FAIL: worktree removed"; _FAIL=$((_FAIL+1)); }
 
 # kill/relaunch: every role resumes its stored conversation id
+# (delegator now carries a configured codex effort: medium per T-0042)
+sed -i '' 's|^effort =$|effort = medium|' ai-team.conf
 : > "$STUB_LOG"
 SESS2=$(bash "$TGT/scripts/ai-team" up --no-attach 2>/dev/null)
 sleep 1
@@ -264,6 +267,16 @@ assert_eq "0" "$(grep -c -- '--session-id' "$STUB_LOG")" "relaunch issues no fre
 assert_contains "$LOG2" "--model glm-5.3" "resume re-passes the model"
 assert_contains "$LOG2" "--append-system-prompt-file" "resume re-passes the role file"
 assert_contains "$LOG2" "--dangerously-bypass-approvals-and-sandbox" "codex resume keeps Full access"
+assert_contains "$LOG2" "-c model_reasoning_effort=medium" "codex resume honors configured effort"
+
+# fresh codex boot with effort configured: same -c override, before the prompt
+bash "$TGT/scripts/ai-team" --kill >/dev/null 2>&1
+rm -f "$MS/delegator"
+: > "$STUB_LOG"
+SESS2B=$(bash "$TGT/scripts/ai-team" up --no-attach 2>/dev/null)
+sleep 1
+assert_eq "$SESS" "$SESS2B" "session name stays deterministic across effort change"
+assert_eq "1" "$(grep -c '^=== codex --dangerously-bypass-approvals-and-sandbox -m .* -c model_reasoning_effort=medium' "$STUB_LOG" || true)" "fresh codex passes configured effort"
 
 # missing transcript: that role rolls over to a fresh id, others unaffected
 bash "$TGT/scripts/ai-team" --kill >/dev/null 2>&1
