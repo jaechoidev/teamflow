@@ -24,7 +24,9 @@ says exactly what and where to fix it.
 
 ## Prerequisites
 
-- macOS or Linux; `tmux`, `python3`, `git`
+- macOS or Linux; `tmux`, `python3`, and `git` ≥ 2.31 (the launcher uses
+  `git rev-parse --path-format=absolute`, introduced in Git 2.31.0, to
+  locate the shared git dir that hosts the mailbox)
 - `codex` CLI on PATH (Delegator)
 - `claude` CLI on PATH (Claude panes; logged in)
 - z.ai panes: an env file with the backend URL + token — default
@@ -48,6 +50,41 @@ says exactly what and where to fix it.
 - **Stop**: `./scripts/ai-team --kill` (session only; worktrees and branches
   stay, nothing is merged/pushed/deleted)
 - **Old task records**: `bash .agents/lib/task.sh clean [days]`
+
+## Integrating approved work
+
+Concurrent work is isolated by construction: each developer role commits to
+its own branch `ai-team/<role>` in its own worktree, and task scopes are
+assigned not to overlap. Integration is always your call (AGENTS.md: no
+merges, commits-to-main, or pushes without approval) and happens one role at
+a time in the main checkout. `main` below means your default branch.
+
+```
+# Inspect one role's work (read-only, no checkout needed). The reviewer
+# uses the same commands before recommending integration.
+git -C .ai-team-worktrees/dev-mid log --oneline main..ai-team/dev-mid
+git -C .ai-team-worktrees/dev-mid diff main...ai-team/dev-mid
+git -C .ai-team-worktrees/dev-mid diff --name-only main...ai-team/dev-mid
+
+# With approval, integrate exactly one role in the main checkout.
+git checkout main
+git cherry-pick main..ai-team/dev-mid
+# or squash into a patch. Both stop on conflict instead of overwriting:
+# git -C .ai-team-worktrees/dev-mid diff main...ai-team/dev-mid | git apply --3way
+
+# Verify before integrating the next role.
+bash tests/run_all.sh
+
+# Optional: refresh the other roles' worktrees so later work rebases onto
+# the updated main and future patches apply cleanly.
+git -C .ai-team-worktrees/dev-senior rebase main
+```
+
+Because integration goes through `cherry-pick` or `git apply --3way`, a
+collision with already-integrated work stops as a conflict you resolve
+deliberately. No role's checkout ever overwrites another's files, and
+neither the launcher nor the roles merge, commit to main, or push on their
+own.
 
 ## Where things live
 
