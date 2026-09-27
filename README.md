@@ -5,9 +5,23 @@ One command opens a tmux session with six persistent CLI agents in a fixed
 developers) dedicated git worktrees. Portable: any git repo can adopt it.
 
 ```
-./scripts/ai-team init     # once per project (scaffolds this tool into it)
-./scripts/ai-team up       # launch (resumes role conversations) or reattach
+TOOL_HOME=/Users/jaechoi/code/tmux-base   # where this repo lives
+cd /path/to/your-project                  # the folder adopting the tool
+git init                                  # only when it is not a repo yet
+bash "$TOOL_HOME/scripts/ai-team" init    # scaffold the tool into it
+./scripts/ai-team up                      # launch or reattach (the copy)
 ```
+
+Run `init` from inside the repo you are adopting into, by path to this
+tool home, never from inside this repo to set up another project. If the
+target is a plain folder rather than a git repo, `git init` it first;
+skip that line for an existing repo. `init` copies `scripts/ai-team` and
+`.agents/` (roles, lib, AGENTS-SECTION.md) into the target repo, writes
+`ai-team.conf` only when absent (yours to edit; init never overwrites
+it), and updates only the marked AGENTS.md section. `up` then needs the
+repo to have at least one commit already (a fresh `git init` has none:
+commit once, the scaffold counts) because worktrees cannot branch off an
+empty repo.
 
 ## Pane map
 
