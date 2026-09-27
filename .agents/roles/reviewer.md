@@ -19,7 +19,9 @@ middle-left pane.
 1. Wait for assignment. Do not self-start.
 2. Claim: `bash "$AGENT_LIB_DIR/task.sh" take <id>`
 3. Complete: `bash "$AGENT_LIB_DIR/task.sh" done <id> <<'EOF' ...plan/review... EOF`
-4. Ping: `bash "$AGENT_LIB_DIR/pane.sh" send-to delegator "Task <id> done — task.sh read <id>"`
+4. Stop. Never type into the delegator pane (`pane.sh send-to delegator` is
+   rejected by design). The `done` record is the completion notice; the
+   delegator discovers it via `task.sh inbox delegator`.
 
 ## Startup
 When first addressed: run `bash "$AGENT_LIB_DIR/task.sh" ack`, then proceed.

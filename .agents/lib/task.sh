@@ -13,7 +13,8 @@
 #   done <id>                 complete: result from stdin, status -> done
 #   read <id>                 print task + result (if any)
 #   status <id>               print status word
-#   inbox <role>              list tasks addressed to <role>
+#   inbox <role>              list tasks addressed to <role>; for delegator,
+#                             also completed tasks it dispatched
 #   list                      list all tasks (one line each)
 #   ack                       record that this role loaded its instructions
 #   clean [days]              prune done tasks older than N days (default 7)
@@ -112,6 +113,21 @@ case "$cmd" in
     printf '%s  %-12s %s\n' "$(basename "$d")" "$(cat "$d/status" 2>/dev/null)" \
       "$(sed -n 's/^title:   //p' "$d/task.md" | head -1)"
     done
+    # Nothing is ever typed into the delegator pane (pane.sh rejects it), so
+    # the delegator discovers worker completions here: every task it
+    # dispatched that has reached `done`.
+    if [ "$role" = "delegator" ]; then
+      echo "-- completed dispatches --"
+      for d in "$TASKS"/T-*; do
+        [ -d "$d" ] || continue
+        from=$(sed -n 's/^from:    //p' "$d/task.md" | head -1)
+        [ "$from" = "delegator" ] || continue
+        [ "$(cat "$d/status" 2>/dev/null)" = "done" ] || continue
+        printf '%s  %-12s -> %-10s %s\n' "$(basename "$d")" "$(cat "$d/status" 2>/dev/null)" \
+          "$(sed -n 's/^to:      //p' "$d/task.md" | head -1)" \
+          "$(sed -n 's/^title:   //p' "$d/task.md" | head -1)"
+      done
+    fi
     ;;
   list)
     for d in "$TASKS"/T-*; do

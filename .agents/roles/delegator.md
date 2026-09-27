@@ -29,8 +29,10 @@ and uncertainty.
 3. Deliver it into the worker's pane:
    `bash "$AGENT_LIB_DIR/pane.sh" send-to <to-role> "Task <id>: <title> — details: task.sh read <id>"`
    Then send the full assignment text the same way if the title alone is not enough.
-4. Workers ping you when done; also poll when the user asks for status:
-   `bash "$AGENT_LIB_DIR/task.sh" status <id>` / `inbox delegator`.
+4. Workers never message your pane (send-to delegator is rejected by
+   design). Poll the mailbox for completions and on user request:
+   `bash "$AGENT_LIB_DIR/task.sh" status <id>` / `inbox delegator`
+   (which also lists your completed dispatches).
 5. Report the summarized result to the user. Promote durable outcomes into
    tracked files only when the user approves.
 

@@ -42,6 +42,20 @@ assert_contains "$(bash "$PANE" tail echo 10)" "second line" "tail shows pane ta
 bash "$PANE" send-to nobody hi 2>/dev/null && rc=0 || rc=1
 assert_eq "1" "$rc" "unknown role fails"
 
+# delegator pane is never addressable, even when registered
+printf 'delegator\t%s\n' "$PID" >> "$MAILBOX/panes.tsv"
+rc=0; out=$(bash "$PANE" send-to delegator "sneaky ping" 2>&1) || rc=$?
+assert_eq "1" "$rc" "send-to delegator rejected"
+assert_contains "$out" "task.sh done" "rejection message points at the mailbox"
+assert_eq "0" "$(grep -c 'sneaky ping' "$MAILBOX/sends.log" || true)" "rejected send not logged"
+sleep 0.3
+assert_eq "0" "$(tmux capture-pane -p -t "$PID" -S -40 | grep -c 'sneaky ping' || true)" "nothing typed into delegator pane"
+
+# worker panes stay addressable after the guard (delegator dispatch path)
+bash "$PANE" send-to echo "still reachable"
+sleep 0.3
+assert_contains "$(tmux capture-pane -p -t "$PID" -S -10)" "still reachable" "send-to worker still works"
+
 tmux kill-session -t "=$SESS" 2>/dev/null
 rm -rf "$(dirname "$MAILBOX")"
 finish_tests

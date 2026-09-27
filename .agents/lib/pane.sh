@@ -7,6 +7,9 @@
 #                              newlines arrive intact). Delivery is logged but
 #                              NOT proof of execution — check the mailbox
 #                              (task.sh status/read) for outcomes.
+#                              send-to delegator is rejected: the Delegator
+#                              pane is the user's chat, so workers report via
+#                              the mailbox (task.sh done / inbox) instead.
 #   tail <role> [lines]        print the pane's last lines (default 15) to see
 #                              whether the CLI is busy, waiting, or errored.
 #
@@ -31,6 +34,11 @@ cmd="${1:-}"; shift || true
 case "$cmd" in
   send-to)
     role="${1:?usage: send-to <role> <text>}"; shift
+    # The delegator pane is the user's chat: nothing may ever be typed into
+    # it, not even by the delegator itself. Completions travel via the
+    # mailbox (task.sh done; the delegator polls `inbox delegator`).
+    [ "$role" = "delegator" ] && fail \
+      "send-to delegator is forbidden: record results with task.sh done; the delegator reads them via task.sh inbox delegator"
     text="${*:?usage: send-to <role> <text>}"
     pane="$(pane_of "$role")" || exit 1
     # Newlines become separate lines; send-keys -l handles all other quoting.

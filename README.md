@@ -40,7 +40,9 @@ says exactly what and where to fix it.
   reports real results. You can also type directly into any worker pane.
 - **Dispatch protocol**: tasks go through the mailbox — the Delegator does
   this for you via `task.sh new` + `pane.sh send-to`. Workers `take` →
-  `done` (result in the task record) → ping the Delegator.
+  `done` (result in the task record). Nothing is ever typed into the
+  Delegator pane (`send-to delegator` is rejected); it discovers
+  completions via `task.sh inbox delegator`.
 - **Check results yourself**: `bash .agents/lib/task.sh list`,
   `... read T-0003`, `... inbox <role>`
 - **Send text to a pane**: `bash .agents/lib/pane.sh send-to dev-mid "..."`
@@ -118,7 +120,8 @@ own.
 
 ## Tests
 
-`bash tests/run_all.sh` — 75 assertions: layout order, role routing, env
-handoff, worktrees, mailbox concurrency, send-to quoting, init idempotence,
+`bash tests/run_all.sh` — 100 assertions: layout order, role routing, env
+handoff, worktrees, mailbox concurrency, send-to quoting (incl. the
+delegator-pane guard), task claim exclusivity, init idempotence,
 reattach, diagnostics. Uses stub CLIs and an isolated tmux socket; spends no
 model quota.

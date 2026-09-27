@@ -80,6 +80,18 @@ rc=0; out=$(AGENT_ROLE=researcher bash "$TASK" take "$idt" 2>&1) || rc=$?
 assert_eq "1" "$rc" "take after done exits nonzero"
 assert_contains "$out" "already done" "take after done message"
 
+# inbox delegator surfaces completed dispatches (mailbox replaces pings)
+idd=$(printf 'dispatch body\n' | AGENT_ROLE=delegator bash "$TASK" new researcher "Completed dispatch")
+idp=$(printf 'dispatch body\n' | AGENT_ROLE=delegator bash "$TASK" new researcher "Open dispatch")
+AGENT_ROLE=researcher bash "$TASK" take "$idd" >/dev/null
+printf 'found it\n' | AGENT_ROLE=researcher bash "$TASK" done "$idd" >/dev/null
+out=$(bash "$TASK" inbox delegator)
+assert_contains "$out" "-- completed dispatches --" "delegator inbox has completed section"
+assert_contains "$out" "$idd  done" "completed dispatch listed with id and status"
+assert_contains "$out" "Completed dispatch" "completed dispatch title shown"
+assert_eq "0" "$(printf '%s' "$out" | grep -c "$idp" || true)" "open dispatch not in completed section"
+assert_eq "0" "$(bash "$TASK" inbox researcher | grep -c 'completed dispatches' || true)" "worker inbox has no completed section"
+
 # clean prunes only done tasks
 mkdir -p "$AGENT_MAILBOX/tasks/T-9000"; echo "done" > "$AGENT_MAILBOX/tasks/T-9000/status"
 touch -t 202001010000 "$AGENT_MAILBOX/tasks/T-9000"
