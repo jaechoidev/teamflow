@@ -241,6 +241,50 @@ assert_contains "$LOG3" "--session-id $SID_R2" "researcher starts fresh after tr
 assert_contains "$LOG3" "--resume $SID_V" "reviewer unaffected by researcher rollover"
 bash "$TGT/scripts/ai-team" --kill >/dev/null 2>&1
 
+# codex discovery must bind to this workspace: a concurrent foreign codex
+# session whose index entry is NEWER but whose rollout cwd differs must lose
+bash "$TGT/scripts/ai-team" --kill >/dev/null 2>&1
+rm -f "$MS/delegator"
+export STUB_FOREIGN_CWD=/tmp/foreign-project
+: > "$STUB_LOG"
+SESS4=$(bash "$TGT/scripts/ai-team" up --no-attach 2>/dev/null)
+unset STUB_FOREIGN_CWD
+sleep 1
+FOREIGN_ID=$(sed -n 's/^FOREIGN_ID=//p' "$STUB_LOG" | head -1)
+SID_D2=$(sed -n 's/^SESSION_ID=//p' "$MS/delegator" 2>/dev/null)
+echo "$FOREIGN_ID" | grep -qE "$UUID_RE" \
+  && _PASS=$((_PASS+1)) || { echo "FAIL: foreign session not simulated [$FOREIGN_ID]"; _FAIL=$((_FAIL+1)); }
+[ "$SID_D2" != "$FOREIGN_ID" ] \
+  && _PASS=$((_PASS+1)) || { echo "FAIL: foreign codex id stored for delegator"; _FAIL=$((_FAIL+1)); }
+echo "$SID_D2" | grep -qE "$UUID_RE" \
+  && _PASS=$((_PASS+1)) || { echo "FAIL: delegator id missing after race [$SID_D2]"; _FAIL=$((_FAIL+1)); }
+grep -q "\"$SID_D2\"" "$CODEX_HOME/session_index.jsonl" \
+  && _PASS=$((_PASS+1)) || { echo "FAIL: stored delegator id not in codex index"; _FAIL=$((_FAIL+1)); }
+grep -q "\"cwd\": \"$TGT\"" "$CODEX_HOME/sessions/stub/rollout-$SID_D2.jsonl" 2>/dev/null \
+  && _PASS=$((_PASS+1)) || { echo "FAIL: stored id rollout cwd is not this workspace"; _FAIL=$((_FAIL+1)); }
+bash "$TGT/scripts/ai-team" --kill >/dev/null 2>&1
+
+# --verify backfill: pending registry + late-booting workspace session, with a
+# NEWER foreign session in the index, must backfill the workspace id only
+bash "$TGT/scripts/ai-team" --kill >/dev/null 2>&1
+rm -f "$MS/delegator"
+UFRC=0; STUB_FAIL=1 bash "$TGT/scripts/ai-team" up --no-attach >/dev/null 2>/dev/null || UFRC=$?
+SID_D3=$(sed -n 's/^SESSION_ID=//p' "$MS/delegator" 2>/dev/null)
+[ -z "$SID_D3" ] \
+  && _PASS=$((_PASS+1)) || { echo "FAIL: pending registry got an id [$SID_D3]"; _FAIL=$((_FAIL+1)); }
+W=$(python3 -c 'import uuid; print(uuid.uuid4())')
+FR=$(python3 -c 'import uuid; print(uuid.uuid4())')
+printf '{"type": "session_meta", "payload": {"id": "%s", "cwd": "%s"}}\n' "$W" "$TGT" \
+  > "$CODEX_HOME/sessions/stub/rollout-$W.jsonl"
+printf '{"id": "%s", "thread_name": "stub"}\n' "$W" >> "$CODEX_HOME/session_index.jsonl"
+printf '{"type": "session_meta", "payload": {"id": "%s", "cwd": "/tmp/other"}}\n' "$FR" \
+  > "$CODEX_HOME/sessions/stub/rollout-$FR.jsonl"
+printf '{"id": "%s", "thread_name": "stub"}\n' "$FR" >> "$CODEX_HOME/session_index.jsonl"
+bash "$TGT/scripts/ai-team" --verify >/dev/null 2>&1
+SID_D3=$(sed -n 's/^SESSION_ID=//p' "$MS/delegator" 2>/dev/null)
+assert_eq "$W" "$SID_D3" "verify backfills the workspace codex id, not the newer foreign one"
+bash "$TGT/scripts/ai-team" --kill >/dev/null 2>&1
+
 # a pane command that dies instantly gets a real diagnosis, not "this is a bug"
 export STUB_FAIL=1
 UFRC=0; bash "$TGT/scripts/ai-team" up --no-attach >/dev/null 2>boot.err || UFRC=$?

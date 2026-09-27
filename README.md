@@ -153,11 +153,13 @@ still wins):
   records for outcomes.
 - **Conversation persistence**: claude transcripts auto-expire per your
   claude retention settings (default 30 days) — expect a conversation
-  rollover then. Codex id discovery assumes no *other* codex session starts
-  on the machine in the same seconds; if one races it, the launcher may
-  store the wrong id for the delegator (delete
-  `.git/ai-team/sessions/delegator` to reset). Two concurrent `up` runs in
-  different terminals could resume the same id twice — run one at a time.
+  rollover then. Codex id discovery only accepts sessions whose rollout
+  records this workspace's cwd (`session_meta.payload.cwd`), so unrelated
+  codex sessions elsewhere never win; only a same-directory codex session
+  started in the same seconds could still race discovery (delete
+  `.git/ai-team/sessions/delegator` to reset, or let `--verify` backfill).
+  Two concurrent `up` runs in different terminals could resume the same id
+  twice — run one at a time.
 
 ## Tests
 

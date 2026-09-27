@@ -145,13 +145,22 @@ codex_session_exists() { # $1 session id -> known to this codex install?
   find "$ch/sessions" -name "*$1*" 2>/dev/null | grep -q .
 }
 
-codex_new_ids_since() { # $1 snapshot line count -> newest minted id ('' if none)
-  local ch="${CODEX_HOME:-$HOME/.codex}" found
+path_eq() { # $1 $2 -> same directory (physical-path aware; missing dirs compare literally)
+  [ "$1" = "$2" ] && return 0
+  local a b
+  a="$(cd "$1" 2>/dev/null && pwd -P)" || return 1
+  b="$(cd "$2" 2>/dev/null && pwd -P)" || return 1
+  [ "$a" = "$b" ]
+}
+
+codex_index_ids_since() { # $1 snapshot line count -> minted ids, newest first
+  local ch="${CODEX_HOME:-$HOME/.codex}"
   local snap="${1:-0}"
   case "$snap" in *[!0-9]*) snap=0 ;; esac
-  found="$(tail -n +"$((snap + 1))" "$ch/session_index.jsonl" 2>/dev/null | python3 -c '
+  tail -n +"$((snap + 1))" "$ch/session_index.jsonl" 2>/dev/null | python3 -c '
 import sys, json
-for line in reversed(sys.stdin.readlines()):
+ids = []
+for line in sys.stdin:
     line = line.strip()
     if not line:
         continue
@@ -160,11 +169,36 @@ for line in reversed(sys.stdin.readlines()):
     except Exception:
         continue
     if i:
-        print(i)
-        break
-' 2>/dev/null)"
-  is_uuid "$found" || found=""
-  printf '%s' "$found"
+        ids.append(i)
+for i in reversed(ids):
+    print(i)
+'
+}
+
+codex_rollout_cwd() { # $1 id -> cwd recorded in its rollout session_meta ('' if unknown)
+  local ch="${CODEX_HOME:-$HOME/.codex}" f
+  f="$(find "$ch/sessions" -name "*$1*" -type f 2>/dev/null | head -1)"
+  [ -n "$f" ] || return 0
+  python3 -c '
+import sys, json
+with open(sys.argv[1]) as fh:
+    first = fh.readline()
+d = json.loads(first)
+p = d.get("payload", {}) or {}
+print(p.get("cwd", ""))
+' "$f" 2>/dev/null
+}
+
+codex_new_ids_since() { # $1 snapshot $2 workspace cwd -> newest id bound to that cwd
+  local id
+  while IFS= read -r id; do
+    is_uuid "$id" || continue
+    path_eq "$(codex_rollout_cwd "$id")" "$2" || continue
+    printf '%s' "$id"
+    return 0
+  done <<EOF
+$(codex_index_ids_since "$1")
+EOF
 }
 
 reg_set_codex_id() { # $1 mailbox $2 role $3 id — record discovered id, mark live
@@ -474,8 +508,10 @@ EOF
   done
 
   # codex mints its own session id on first boot: poll the session index and
-  # store it. If it never shows up (slow or old codex, dead pane), the entry
-  # stays pending and `--verify` backfills it later.
+  # store the minted id only when its rollout session_meta cwd matches this
+  # workspace, so a concurrent foreign codex session can never win. If no
+  # match appears (slow or old codex, dead pane), the entry stays pending and
+  # `--verify` backfills it with the same cwd filter.
   local drole dlabel dcli dmodel deffort dworktree did dtries
   while IFS="$(printf '\t')" read -r drole dlabel dcli dmodel deffort dworktree; do
     if [ "$dcli" = codex ] && [ "$(reg_get "$mailbox" "$drole" STATUS)" = pending ] \
@@ -483,7 +519,7 @@ EOF
       did=""
       dtries=0
       while [ "$dtries" -lt 20 ]; do
-        did="$(codex_new_ids_since "$(reg_get "$mailbox" "$drole" SNAPSHOT)")"
+        did="$(codex_new_ids_since "$(reg_get "$mailbox" "$drole" SNAPSHOT)" "$(reg_get "$mailbox" "$drole" CWD)")"
         [ -n "$did" ] && break
         dtries=$((dtries + 1))
         sleep 0.25
@@ -531,10 +567,11 @@ cmd_verify() {
     local pid ack="no" alive="gone" ack_time="" bid=""
     pid=$(awk -F '\t' -v r="$role" '$1 == r {print $2; exit}' "$mailbox/panes.tsv" 2>/dev/null)
     [ -n "$pid" ] && tmux list-panes -a -F '#{pane_id}' 2>/dev/null | grep -qx "$pid" && alive="pane $pid"
-    # backfill a codex id that boot-time discovery missed (partial boot)
+    # backfill a codex id that boot-time discovery missed (partial boot);
+    # same cwd binding as boot-time discovery — never a foreign session
     if [ "$cli" = codex ] && [ "$(reg_get "$mailbox" "$role" STATUS)" = pending ] \
        && [ -z "$(reg_get "$mailbox" "$role" SESSION_ID)" ]; then
-      bid="$(codex_new_ids_since "$(reg_get "$mailbox" "$role" SNAPSHOT)")"
+      bid="$(codex_new_ids_since "$(reg_get "$mailbox" "$role" SNAPSHOT)" "$(reg_get "$mailbox" "$role" CWD)")"
       [ -n "$bid" ] && reg_set_codex_id "$mailbox" "$role" "$bid"
     fi
     if [ -f "$mailbox/acks/$role.json" ]; then
