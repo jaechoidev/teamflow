@@ -120,8 +120,8 @@ own.
 
 ## Tests
 
-`bash tests/run_all.sh` — 100 assertions: layout order, role routing, env
+`bash tests/run_all.sh` — 118 assertions: layout order, role routing, env
 handoff, worktrees, mailbox concurrency, send-to quoting (incl. the
-delegator-pane guard), task claim exclusivity, init idempotence,
-reattach, diagnostics. Uses stub CLIs and an isolated tmux socket; spends no
-model quota.
+delegator-pane guard), task claim/completion exclusivity, init
+idempotence, reattach, diagnostics. Uses stub CLIs and an isolated tmux
+socket; spends no model quota.

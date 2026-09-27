@@ -92,6 +92,52 @@ assert_contains "$out" "Completed dispatch" "completed dispatch title shown"
 assert_eq "0" "$(printf '%s' "$out" | grep -c "$idp" || true)" "open dispatch not in completed section"
 assert_eq "0" "$(bash "$TASK" inbox researcher | grep -c 'completed dispatches' || true)" "worker inbox has no completed section"
 
+# done: only the addressee/claimant, exactly once
+idd2=$(printf 'completion rules\n' | AGENT_ROLE=delegator bash "$TASK" new dev-junior "Done semantics")
+rc=0; out=$(printf 'evil\n' | AGENT_ROLE=dev-mid bash "$TASK" done "$idd2" 2>&1) || rc=$?
+assert_eq "1" "$rc" "wrong-role done exits nonzero"
+assert_contains "$out" "addressed to dev-junior, not dev-mid" "wrong-role done message"
+assert_eq "assigned" "$(bash "$TASK" status "$idd2")" "rejected done leaves status assigned"
+assert_eq "0" "$([ -f "$AGENT_MAILBOX/tasks/$idd2/result.md" ] && echo 1 || echo 0)" "rejected done writes no result"
+
+rc=0; out=$(printf 'x\n' | AGENT_ROLE= bash "$TASK" done "$idd2" 2>&1) || rc=$?
+assert_eq "1" "$rc" "roleless done exits nonzero"
+assert_contains "$out" "AGENT_ROLE" "roleless done message"
+
+# addressee may complete without a prior take (auto-claim)
+printf 'auto-claim result\n' | AGENT_ROLE=dev-junior bash "$TASK" done "$idd2" >/dev/null
+assert_eq "done" "$(bash "$TASK" status "$idd2")" "addressee done succeeds"
+assert_contains "$(bash "$TASK" read "$idd2")" "auto-claim result" "result recorded"
+assert_contains "$(cat "$AGENT_MAILBOX/tasks/$idd2/events")" "taken by dev-junior" "auto-claim recorded"
+
+# repeated completion rejected; first result survives
+rc=0; out=$(printf 'second\n' | AGENT_ROLE=dev-junior bash "$TASK" done "$idd2" 2>&1) || rc=$?
+assert_eq "1" "$rc" "repeat done exits nonzero"
+assert_contains "$out" "already" "repeat done message"
+assert_contains "$(cat "$AGENT_MAILBOX/tasks/$idd2/result.md")" "auto-claim result" "first result survives"
+assert_eq "1" "$(grep -c 'done by' "$AGENT_MAILBOX/tasks/$idd2/events" || true)" "single done event"
+
+# claim owner mismatch rejected (defensive: handoff or tampered claim)
+idt2=$(printf 'handoff\n' | AGENT_ROLE=delegator bash "$TASK" new researcher "Owner guard")
+AGENT_ROLE=researcher bash "$TASK" take "$idt2" >/dev/null
+echo "reviewer" > "$AGENT_MAILBOX/tasks/$idt2/claim/owner"
+rc=0; out=$(printf 'r\n' | AGENT_ROLE=researcher bash "$TASK" done "$idt2" 2>&1) || rc=$?
+assert_eq "1" "$rc" "non-owner done exits nonzero"
+assert_contains "$out" "claimed by reviewer" "non-owner done message"
+
+# race: parallel done by the addressee - exactly one result, one done event
+idr2=$(printf 'race\n' | AGENT_ROLE=delegator bash "$TASK" new dev-junior "Parallel done race")
+AGENT_ROLE=dev-junior bash "$TASK" take "$idr2" >/dev/null
+p="$(dirname "$AGENT_MAILBOX")"
+for i in 1 2 3 4 5 6; do
+  ( printf 'race result %s\n' "$i" | AGENT_ROLE=dev-junior bash "$TASK" done "$idr2" >/dev/null 2>&1 && touch "$p/dwin_$i" ) &
+done
+wait
+assert_eq "1" "$(ls "$p" | grep -c '^dwin_' || true)" "parallel done: exactly one winner"
+assert_eq "1" "$(grep -c 'done by' "$AGENT_MAILBOX/tasks/$idr2/events" || true)" "single done event after race"
+assert_eq "1" "$(wc -l < "$AGENT_MAILBOX/tasks/$idr2/result.md" | tr -d ' ')" "race result is a single intact line"
+rm -f "$p"/dwin_*
+
 # clean prunes only done tasks
 mkdir -p "$AGENT_MAILBOX/tasks/T-9000"; echo "done" > "$AGENT_MAILBOX/tasks/T-9000/status"
 touch -t 202001010000 "$AGENT_MAILBOX/tasks/T-9000"

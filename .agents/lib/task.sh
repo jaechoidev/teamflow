@@ -10,7 +10,8 @@
 #   take <id>                 claim: status assigned -> in-progress;
 #                             exclusive (atomic mkdir of <id>/claim) and only
 #                             for the role the task is addressed to
-#   done <id>                 complete: result from stdin, status -> done
+#   done <id>                 complete: result from stdin, status -> done;
+#                             only the addressee/claimant, exactly once
 #   read <id>                 print task + result (if any)
 #   status <id>               print status word
 #   inbox <role>              list tasks addressed to <role>; for delegator,
@@ -20,10 +21,11 @@
 #   clean [days]              prune done tasks older than N days (default 7)
 #
 # Concurrency: one directory per task; creation is an atomic mkdir race;
-# claims likewise: `take` must win an atomic mkdir of the task's claim/
-# directory, so exactly one claim ever exists and later takers lose. Status
-# updates are writes to distinct files, so parallel writers never share a
-# file. No shared mutable research.md/review.md — ever.
+# claims likewise: `take` and `done` both gate on the task's claim/
+# directory (atomic mkdir or owner match), so take/done races serialize.
+# Completion is exactly-once via an atomic mkdir of claim/completed, and
+# result.md lands through a rename so readers never see partial output.
+# No shared mutable research.md/review.md — ever.
 set -u
 
 fail() { echo "task.sh: $*" >&2; exit 1; }
@@ -87,9 +89,32 @@ case "$cmd" in
   done)
     id="${1:?usage: done <id>}"
     [ -d "$TASKS/$id" ] || fail "no such task: $id"
-    cat > "$TASKS/$id/result.md"
+    role="${AGENT_ROLE:-}"
+    [ -n "$role" ] || fail "done requires AGENT_ROLE (run from an ai-team pane)"
+    to=$(sed -n 's/^to:      //p' "$TASKS/$id/task.md" | head -1)
+    [ "$to" = "$role" ] || fail "$id is addressed to ${to:-unknown}, not $role"
+    [ "$(cat "$TASKS/$id/status" 2>/dev/null)" = "done" ] && fail "$id is already done — results are immutable"
+    # Hold the claim: win its mkdir (recording an auto-claim event) or be
+    # its recorded owner. take races serialize here for the same reason.
+    if ! mkdir "$TASKS/$id/claim" 2>/dev/null; then
+      owner="$(cat "$TASKS/$id/claim/owner" 2>/dev/null)"
+      [ "$owner" = "$role" ] || fail "$id is claimed by ${owner:-another role}"
+    else
+      echo "$role" > "$TASKS/$id/claim/owner"
+      echo "$(now) taken by $role" >> "$TASKS/$id/events"
+    fi
+    # Exactly-once completion: only the first mkdir of claim/completed wins;
+    # the result is staged then renamed so result.md is never partial.
+    tmp="$TASKS/$id/.result.$$"
+    cat > "$tmp"
+    if ! mkdir "$TASKS/$id/claim/completed" 2>/dev/null; then
+      rm -f "$tmp"
+      fail "$id already completed by $(cat "$TASKS/$id/claim/completed/by" 2>/dev/null || echo another run)"
+    fi
+    echo "$role" > "$TASKS/$id/claim/completed/by"
+    mv "$tmp" "$TASKS/$id/result.md"
     echo "done" > "$TASKS/$id/status"
-    echo "$(now) done by ${AGENT_ROLE:-?}" >> "$TASKS/$id/events"
+    echo "$(now) done by $role" >> "$TASKS/$id/events"
     ;;
   read)
     id="${1:?usage: read <id>}"
