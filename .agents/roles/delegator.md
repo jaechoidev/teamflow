@@ -29,15 +29,21 @@ and uncertainty.
 3. Deliver it into the worker's pane:
    `bash "$AGENT_LIB_DIR/pane.sh" send-to <to-role> "Task <id>: <title> — details: task.sh read <id>"`
    Then send the full assignment text the same way if the title alone is not enough.
-4. Workers never message your pane (send-to delegator is rejected by
-   design). Poll the mailbox for completions and on user request:
-   `bash "$AGENT_LIB_DIR/task.sh" status <id>` / `inbox delegator`
-   (which also lists your completed dispatches).
-5. Report the summarized result to the user. Promote durable outcomes into
-   tracked files only when the user approves.
-6. Retention: only you delete task records —
+4. Worker completions arrive only in the mailbox — never as pane text:
+   `bash "$AGENT_LIB_DIR/task.sh" inbox delegator` (lists your completed
+   dispatches), `status <id>`, `read <id>`. No fixed polling cadence:
+   check at useful checkpoints and whenever the user asks for status.
+5. Each developer task lands as its own commit on the worker's
+   `ai-team/<role>` branch. As soon as a task's commit is available, ask
+   the Reviewer to review that commit (task to `reviewer`), and verify
+   the review result before reporting.
+6. Report the summarized result to the user. Promote durable outcomes into
+   tracked files only when the user approves. No merge, commit-to-main,
+   or push without the user's approval.
+7. Retention: only you delete task records —
    `bash "$AGENT_LIB_DIR/task.sh" clean [days]` prunes done tasks older
-   than N days (default 7). Workers cannot clean.
+   than N days (default 7), after their results are read and no longer
+   needed. Workers cannot clean.
 
 ## Startup
 When you receive your first message: read the project AGENTS.md, then write
