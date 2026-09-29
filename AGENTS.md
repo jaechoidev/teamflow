@@ -13,12 +13,12 @@ This repository runs a six-agent tmux workspace (`scripts/ai-team`).
 
 | Pane | Role ID | CLI | Default work |
 | --- | --- | --- | --- |
-| left-top | `delegator` | Codex | user interface; dispatch + summarize |
-| left-bottom | `researcher` | z.ai GLM | external research, citations, options |
-| right-1 | `reviewer` | Claude | plans, architecture, reviews |
-| right-2 | `dev-senior` | Claude | complex/perf/architecture-sensitive code |
-| right-3 | `dev-mid` | Claude | ordinary features/fixes/tests |
-| right-4 | `dev-junior` | z.ai GLM | bounded tasks, tests, docs |
+| left | `delegator` | Codex | user interface; dispatch + summarize |
+| right-1 | `researcher` | z.ai GLM | external research, citations, options |
+| right-2 | `reviewer` | Claude | plans, architecture, reviews |
+| right-3 | `dev-senior` | Claude | complex/perf/architecture-sensitive code |
+| right-4 | `dev-mid` | Claude | ordinary features/fixes/tests |
+| right-5 | `dev-junior` | z.ai GLM | bounded tasks, tests, docs |
 
 Rules:
 - Workers act only when the user or the delegator assigns a task. No

@@ -1,8 +1,8 @@
 # ai-team — six-agent tmux workspace
 
 One command opens a tmux session with six persistent CLI agents in a fixed
-layout: Delegator and Researcher in the left column, four workers stacked
-down the right, each with its own role, a shared task mailbox, and (for the
+layout: a full-height Delegator on the left and five roles stacked down
+the right, each with its own role, a shared task mailbox, and (for the
 developers) dedicated git worktrees. Portable: any git repo can adopt it.
 
 ```
@@ -32,17 +32,17 @@ worktrees even in an empty repo.
 
 ## Pane map
 
-Left column (top to bottom):
+Left column (full height):
 
 1. **Delegator** — Codex (`gpt-6-sol`, medium), your interface
-2. **Researcher** — z.ai GLM (`glm-5.3`, max)
 
 Right column (top to bottom):
 
-1. **Reviewer & Planner** — Claude (`fable`, max)
-2. **Dev Senior** — Claude (`fable`, max)
-3. **Dev Mid** — Claude (`opus`, max)
-4. **Dev Junior** — z.ai GLM (`glm-5.3`, max)
+1. **Researcher** — z.ai GLM (`glm-5.3`, max)
+2. **Reviewer & Planner** — Claude (`fable`, max)
+3. **Dev Senior** — Claude (`fable`, max)
+4. **Dev Mid** — Claude (`opus`, max)
+5. **Dev Junior** — z.ai GLM (`glm-5.3`, max)
 
 Equal-width columns.
 
@@ -65,7 +65,7 @@ says exactly what and where to fix it.
 ## Daily use
 
 - **Launch/reattach**: `./scripts/ai-team up` (from anywhere inside the repo)
-- **Talk**: type to the Delegator (top-left); it dispatches to workers and
+- **Talk**: type to the Delegator (left pane); it dispatches to workers and
   reports real results. You can also type directly into any worker pane.
 - **Dispatch protocol**: tasks go through the mailbox — the Delegator does
   this for you via `task.sh new` + `pane.sh send-to`. Workers `take` →

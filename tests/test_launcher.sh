@@ -122,8 +122,9 @@ assert_eq "1" "$([ -n "$SESS" ] && echo 1)" "up printed a session name ($SESS)"
 sleep 1  # let panes boot stubs
 assert_eq "6" "$(tmux list-panes -t "=$SESS" -F '#{pane_id}' | wc -l | tr -d ' ')" "six panes created"
 
-# geometry (T-0036): left column Delegator/Researcher, right column stacked
-# Reviewer/Dev Senior/Dev Mid/Dev Junior. Role->pane comes from the registry
+# geometry (T-0052): Delegator alone at full height on the left; the other
+# five roles stacked down the right in config order (Researcher, Reviewer,
+# Dev Senior, Dev Mid, Dev Junior). Role->pane comes from the registry
 # (panes.tsv), independent of tmux pane numbering. geoline prints id:top:left:width:height.
 PANETSV="$TGT/.git/ai-team/panes.tsv"
 geoline() {
@@ -136,37 +137,35 @@ G_D=$(geoline delegator); G_R=$(geoline researcher); G_V=$(geoline reviewer)
 G_S=$(geoline dev-senior); G_M=$(geoline dev-mid); G_J=$(geoline dev-junior)
 fld() { printf '%s' "$1" | cut -d: -f"$2"; }
 assert_eq "6" "$(printf '%s\n' "$G_D" "$G_R" "$G_V" "$G_S" "$G_M" "$G_J" | cut -d: -f1 | sort -u | wc -l | tr -d ' ')" "six distinct registry panes"
-# columns: left edge shared within a column, left strictly left of right
-assert_eq "$(fld "$G_D" 3)" "$(fld "$G_R" 3)" "left column shares a left edge"
-assert_eq "$(fld "$G_V" 3)" "$(fld "$G_S" 3)" "right column shares a left edge (top pair)"
-assert_eq "$(fld "$G_M" 3)" "$(fld "$G_J" 3)" "right column shares a left edge (bottom pair)"
-assert_eq "$(fld "$G_V" 3)" "$(fld "$G_M" 3)" "right column left edge consistent"
-[ "$(fld "$G_D" 3)" -lt "$(fld "$G_V" 3)" ] \
-  && _PASS=$((_PASS+1)) || { echo "FAIL: left column not left of right column"; _FAIL=$((_FAIL+1)); }
+# columns: all five right panes share a left edge; delegator strictly left
+assert_eq "$(fld "$G_R" 3)" "$(fld "$G_V" 3)" "right column shares a left edge (researcher/reviewer)"
+assert_eq "$(fld "$G_V" 3)" "$(fld "$G_S" 3)" "right column shares a left edge (reviewer/senior)"
+assert_eq "$(fld "$G_S" 3)" "$(fld "$G_M" 3)" "right column shares a left edge (senior/mid)"
+assert_eq "$(fld "$G_M" 3)" "$(fld "$G_J" 3)" "right column shares a left edge (mid/junior)"
+[ "$(fld "$G_D" 3)" -lt "$(fld "$G_R" 3)" ] \
+  && _PASS=$((_PASS+1)) || { echo "FAIL: delegator not left of right column"; _FAIL=$((_FAIL+1)); }
 # equal-width columns (within tmux line rounding)
-assert_eq "$(fld "$G_R" 4)" "$(fld "$G_D" 4)" "researcher width matches delegator (true left column)"
-assert_eq "$(fld "$G_S" 4)" "$(fld "$G_V" 4)" "right column width consistent (senior vs reviewer)"
-assert_eq "$(fld "$G_M" 4)" "$(fld "$G_V" 4)" "right column width consistent (mid vs reviewer)"
-assert_eq "$(fld "$G_J" 4)" "$(fld "$G_V" 4)" "right column width consistent (junior vs reviewer)"
-[ $(( $(fld "$G_D" 4) - $(fld "$G_V" 4) )) -le 1 ] && [ $(( $(fld "$G_V" 4) - $(fld "$G_D" 4) )) -le 1 ] \
-  && _PASS=$((_PASS+1)) || { echo "FAIL: columns not equal width ($(fld "$G_D" 4) vs $(fld "$G_V" 4))"; _FAIL=$((_FAIL+1)); }
-# vertical order within each column
-[ "$(fld "$G_D" 2)" -lt "$(fld "$G_R" 2)" ] \
-  && _PASS=$((_PASS+1)) || { echo "FAIL: delegator not above researcher"; _FAIL=$((_FAIL+1)); }
-[ "$(fld "$G_V" 2)" -lt "$(fld "$G_S" 2)" ] && [ "$(fld "$G_S" 2)" -lt "$(fld "$G_M" 2)" ] \
-  && [ "$(fld "$G_M" 2)" -lt "$(fld "$G_J" 2)" ] \
-  && _PASS=$((_PASS+1)) || { echo "FAIL: right column not stacked V<S<M<J"; _FAIL=$((_FAIL+1)); }
-# near-equal heights within each column (tmux rounds to whole lines)
-[ $(( $(fld "$G_D" 5) - $(fld "$G_R" 5) )) -le 1 ] && [ $(( $(fld "$G_R" 5) - $(fld "$G_D" 5) )) -le 1 ] \
-  && _PASS=$((_PASS+1)) || { echo "FAIL: left column unequal heights"; _FAIL=$((_FAIL+1)); }
-HMAX=$(( $(fld "$G_V" 5) > $(fld "$G_S" 5) ? $(fld "$G_V" 5) : $(fld "$G_S" 5) ))
-HMAX=$(( HMAX > $(fld "$G_M" 5) ? HMAX : $(fld "$G_M" 5) ))
-HMAX=$(( HMAX > $(fld "$G_J" 5) ? HMAX : $(fld "$G_J" 5) ))
-HMIN=$(( $(fld "$G_V" 5) < $(fld "$G_S" 5) ? $(fld "$G_V" 5) : $(fld "$G_S" 5) ))
-HMIN=$(( HMIN < $(fld "$G_M" 5) ? HMIN : $(fld "$G_M" 5) ))
-HMIN=$(( HMIN < $(fld "$G_J" 5) ? HMIN : $(fld "$G_J" 5) ))
+assert_eq "$(fld "$G_V" 4)" "$(fld "$G_R" 4)" "right column width consistent (reviewer vs researcher)"
+assert_eq "$(fld "$G_V" 4)" "$(fld "$G_S" 4)" "right column width consistent (reviewer vs senior)"
+assert_eq "$(fld "$G_V" 4)" "$(fld "$G_M" 4)" "right column width consistent (reviewer vs mid)"
+assert_eq "$(fld "$G_V" 4)" "$(fld "$G_J" 4)" "right column width consistent (reviewer vs junior)"
+[ $(( $(fld "$G_D" 4) - $(fld "$G_R" 4) )) -le 1 ] && [ $(( $(fld "$G_R" 4) - $(fld "$G_D" 4) )) -le 1 ] \
+  && _PASS=$((_PASS+1)) || { echo "FAIL: columns not equal width ($(fld "$G_D" 4) vs $(fld "$G_R" 4))"; _FAIL=$((_FAIL+1)); }
+# vertical order in the right column: researcher on top, dev-junior at bottom
+[ "$(fld "$G_R" 2)" -lt "$(fld "$G_V" 2)" ] && [ "$(fld "$G_V" 2)" -lt "$(fld "$G_S" 2)" ] \
+  && [ "$(fld "$G_S" 2)" -lt "$(fld "$G_M" 2)" ] && [ "$(fld "$G_M" 2)" -lt "$(fld "$G_J" 2)" ] \
+  && _PASS=$((_PASS+1)) || { echo "FAIL: right column not stacked R<V<S<M<J"; _FAIL=$((_FAIL+1)); }
+# near-equal heights across the five right panes (tmux rounds to whole lines)
+HMAX=$(for h in $(fld "$G_R" 5) $(fld "$G_V" 5) $(fld "$G_S" 5) $(fld "$G_M" 5) $(fld "$G_J" 5); do echo "$h"; done | sort -n | tail -1)
+HMIN=$(for h in $(fld "$G_R" 5) $(fld "$G_V" 5) $(fld "$G_S" 5) $(fld "$G_M" 5) $(fld "$G_J" 5); do echo "$h"; done | sort -n | head -1)
 [ $((HMAX - HMIN)) -le 1 ] \
   && _PASS=$((_PASS+1)) || { echo "FAIL: right column heights spread $HMIN..$HMAX"; _FAIL=$((_FAIL+1)); }
+# delegator alone spans the full pane grid: its top equals the right
+# column top (row 1; row 0 is the border-status line) and its height
+# equals the five right panes plus their four shared borders
+assert_eq "$(fld "$G_R" 2)" "$(fld "$G_D" 2)" "delegator top matches right column top"
+[ "$(fld "$G_D" 5)" -eq $(( $(fld "$G_R" 5) + $(fld "$G_V" 5) + $(fld "$G_S" 5) + $(fld "$G_M" 5) + $(fld "$G_J" 5) + 4 )) ] \
+  && _PASS=$((_PASS+1)) || { echo "FAIL: delegator not full height ($(fld "$G_D" 5) vs five panes + 4 borders)"; _FAIL=$((_FAIL+1)); }
 
 # stubs saw the right env + cwds
 LOG=$(cat "$STUB_LOG")
