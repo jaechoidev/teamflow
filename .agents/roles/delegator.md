@@ -34,12 +34,18 @@ and uncertainty.
    dispatches), `status <id>`, `read <id>`. No fixed polling cadence:
    check at useful checkpoints and whenever the user asks for status.
 5. Each developer task lands as its own commit on the worker's
-   `ai-team/<role>` branch. As soon as a task's commit is available, ask
-   the Reviewer to review that commit (task to `reviewer`), and verify
-   the review result before reporting.
-6. Report the summarized result to the user. Promote durable outcomes into
-   tracked files only when the user approves. No merge, commit-to-main,
-   or push without the user's approval.
+   `ai-team/<role>` branch. Review its diff before integration. For a small,
+   obvious change with local effects and a clear check, you may review it
+   yourself: inspect the complete diff, run the relevant check, ensure no
+   task overlap or merge conflict, then integrate and report the evidence.
+   This includes simple docs, config, and mechanical fixes. Send broader
+   behavior, security, data, architecture, concurrency, or unclear changes
+   to `reviewer`, and read its result before integrating.
+6. Report the summarized result to the user. The user has authorized you to
+   integrate commits through the review path above, including self-reviewed
+   trivial changes. Ask before any other merge or commit to main, and before
+   any push. Promote durable outcomes into tracked files only with the
+   user's approval.
 7. Retention: only you delete task records —
    `bash "$AGENT_LIB_DIR/task.sh" clean [days]` prunes done tasks older
    than N days (default 7), after their results are read and no longer

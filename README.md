@@ -87,21 +87,23 @@ says exactly what and where to fix it.
 
 Concurrent work is isolated by construction: each developer role commits to
 its own branch `ai-team/<role>` in its own worktree, one commit per
-completed task, and task scopes are assigned not to overlap. The flow: the
-role finishes and reports its commit, the Reviewer inspects and approves
-it, then the Delegator integrates into `main` with your approval, one role
-at a time. Nothing is pushed without your explicit go-ahead. `main` below
-means your default branch.
+completed task, and task scopes are assigned not to overlap. The role
+finishes and reports its commit. The Delegator inspects the full diff and
+integrates a small, obvious change after a relevant check. Broader or
+unclear changes go to the Reviewer first. This review and integration flow
+has your approval; nothing is pushed without your explicit go-ahead.
+`main` below means your default branch.
 
 ```
-# Inspect one role's work (read-only, no checkout needed). The Reviewer
-# uses these commands before approving. An empty log means the role has
+# Inspect one role's work (read-only, no checkout needed). The Delegator
+# or Reviewer uses these commands. An empty log means the role has
 # nothing to integrate: skip it.
 git -C .ai-team-worktrees/dev-mid log --oneline main..ai-team/dev-mid
 git -C .ai-team-worktrees/dev-mid diff main...ai-team/dev-mid
 git -C .ai-team-worktrees/dev-mid diff --name-only main...ai-team/dev-mid
 
-# Integrate exactly one role, only after Reviewer approval and yours.
+# Integrate exactly one role after Reviewer approval or a documented
+# Delegator self-review of a small, obvious change.
 # The main checkout must be clean before starting.
 git status --short                 # in the main checkout: no output = clean
 git checkout main
@@ -123,8 +125,8 @@ git -C .ai-team-worktrees/dev-senior rebase main
 
 Because integration goes through `cherry-pick` or `git apply --3way`, a
 collision with already-integrated work stops as a conflict you resolve
-deliberately. No role's checkout ever overwrites another's files, and
-nothing merges into main or leaves the machine without your approval.
+deliberately. No role's checkout ever overwrites another's files. Only
+reviewed work enters main; nothing is pushed without your approval.
 
 ## Where things live
 

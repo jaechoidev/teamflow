@@ -25,8 +25,12 @@ Rules:
 - Only the Delegator deletes task records (`task.sh clean`); `done` keeps
   results readable.
 - Developers work in separate worktrees (`.ai-team-worktrees/<role>`,
-  branches `ai-team/<role>`). No merges, commits-to-main, or pushes without
-  the user's approval. Avoid overlapping concurrent edits; coordinate scope.
+  branches `ai-team/<role>`). Avoid overlapping concurrent edits; coordinate scope.
+- The Delegator integrates each task commit after Reviewer approval, or after
+  its own review for a small, obvious change with local effects and a clear
+  check. It inspects the full diff, verifies the change, and reports the
+  evidence. Broader or unclear changes go to Reviewer. This review and
+  integration flow has the user's approval; pushes still require approval.
 - Task records are scratch. Promote durable decisions/docs into tracked
   files only with user approval.
 - Keep task logs concise; never put secrets in them.
