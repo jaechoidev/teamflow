@@ -32,6 +32,25 @@ for s in draft revised reviewed superseded; do
   assert_contains "$g" "\`$s\`" "README defines status $s"
 done
 assert_contains "$g" "docs/superpowers/specs/" "README separates notes from Superpowers specs"
+assert_contains "$g" "docs/superpowers/plans/" "README separates notes from Superpowers plans"
+
+# the README's "Creating a note" command fills the template, and a rerun
+# refuses to overwrite: uncommitted user text in a note must survive
+cmd="$(awk '/^## Creating a note/ { s = 1; next } s && /^```/ { if (b) exit; b = 1; next } b' "$DT/README.md" 2>/dev/null)"
+for sh in sh bash zsh; do
+  command -v "$sh" >/dev/null 2>&1 || continue
+  W="$(mktemp -d)"; mkdir -p "$W/.agents" && cp -R "$DT" "$W/.agents/doc-templates"
+  n="$W/docs/notes/task-mailbox.md"
+  ( cd "$W" && "$sh" -c "$cmd" ) >/dev/null 2>&1; rc=$?
+  assert_eq "0" "$rc" "$sh: README command creates a note"
+  assert_contains "$(cat "$n" 2>/dev/null)" "# Task mailbox" "$sh: title filled"
+  assert_eq "0" "$(grep -c '{{' "$n" 2>/dev/null || true)" "$sh: no placeholder left"
+  echo "my words" >> "$n"
+  ( cd "$W" && "$sh" -c "$cmd" ) >/dev/null 2>&1; rc=$?
+  [ "$rc" -ne 0 ] && _PASS=$((_PASS+1)) || { echo "FAIL: $sh: rerun did not refuse"; _FAIL=$((_FAIL+1)); }
+  assert_contains "$(cat "$n")" "my words" "$sh: existing note kept on rerun"
+  rm -rf "$W"
+done
 
 EM="$(printf '\342\200\224')"; EN="$(printf '\342\200\223')"   # UTF-8 em and en dash
 assert_eq "0" "$(cat "$DT"/*.md 2>/dev/null | grep -cF -e "$EM" -e "$EN" || true)" "no em or en dashes"
