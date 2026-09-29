@@ -11,7 +11,14 @@
 #                                 quota; clean env, zai panes source zai_env)
 #   scripts/ai-team --kill        kill the workspace session
 #
-# Flags: --no-attach (build detached), -h|--help.
+# Flags:
+#   --config <file>  use this workspace config instead of ai-team.conf (up,
+#                    --verify, --check-models, --kill). A relative path
+#                    resolves from the repo root, wherever you invoke from.
+#                    One team runs per repo: stop the running session with
+#                    --kill before starting another config.
+#   --no-attach      build detached (up only)
+#   -h|--help        show this help
 #
 # Design notes:
 # - Everything is derived from the CURRENT repo (git rev-parse); no
@@ -21,6 +28,9 @@
 #   actually works for your account is only knowable live — use
 #   --check-models. Missing configuration is reported, never silently
 #   substituted.
+# - One team per repo: the mailbox and the role worktrees belong to the repo,
+#   not to a config. <mailbox>/active records the running session and the
+#   config that started it. Another config is refused until --kill.
 set -u
 
 TOOL_HOME="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -28,12 +38,21 @@ TOOL_HOME="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 die() { echo "ai-team: $*" >&2; exit 1; }
 say() { echo "ai-team: $*" >&2; }
 
-usage() { sed -n '2,20p' "$0" | sed 's/^# \{0,1\}//'; }
+usage() { # the header comment, up to the design notes
+  awk 'NR == 1 { next } /^# Design notes/ { exit } { sub(/^# ?/, ""); print }' "$0"
+}
 
 # ---------- helpers ------------------------------------------------------------
 
 shell_quote() { # POSIX single-quote; safe under sh/bash/zsh pane shells
   printf "'%s'" "$(printf '%s' "$1" | sed "s/'/'\\\\''/g")"
+}
+
+hint_path() { # $1 path $2 team root -> the path as a command line takes it
+  local c="$1"
+  case "$c" in "$2"/*) c="${c#"$2"/}" ;; esac
+  case "$c" in *[!A-Za-z0-9_./-]*) c="$(shell_quote "$c")" ;; esac
+  printf '%s' "$c"
 }
 
 repo_root() {
@@ -48,6 +67,62 @@ git_common_dir() { # absolute path to the shared .git dir (works in worktrees)
 # runs them in a subshell: a die there exits only the subshell and the empty
 # result would flow onward. Every call site therefore ends with `|| exit $?`
 # so the diagnostic and nonzero status actually stop the launcher.
+# team_root and resolve_conf below follow the same rule.
+
+team_root() { # the checkout that owns the team
+  # Team worktrees live at <root>/.ai-team-worktrees/<name>. Invoked from
+  # one, the launcher acts on <root>: same session, same mailbox, and the
+  # same config paths as from the checkout itself.
+  local top parent owner
+  top="$(repo_root)" || exit $?
+  parent="$(dirname "$top")"
+  if [ "$(basename "$parent")" = ".ai-team-worktrees" ]; then
+    owner="$(dirname "$parent")"
+    if [ "$(git -C "$owner" rev-parse --show-toplevel 2>/dev/null)" = "$owner" ] \
+       && [ "$(git -C "$owner" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)" \
+            = "$(git -C "$top" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)" ]; then
+      top="$owner"
+    fi
+  fi
+  printf '%s\n' "$top"
+}
+
+abs_path() { # canonical path: one file has one name, however it was spelled
+  python3 -c 'import os, sys; print(os.path.realpath(sys.argv[1]))' "$1"
+}
+
+resolve_conf() { # $1 team root  $2 --config value ('' = default) -> config path
+  local root="$1" arg="$2" p
+  command -v python3 >/dev/null 2>&1 || die "python3 not found"
+  if [ -z "$arg" ]; then
+    p="$root/ai-team.conf"
+    [ -f "$p" ] || p="$TOOL_HOME/ai-team.conf"
+    [ -f "$p" ] || die "no ai-team.conf (run: scripts/ai-team init)"
+  else
+    # Relative paths resolve from the repo root, never from the current
+    # directory: the same spelling names the same file from a subdirectory
+    # or a team worktree.
+    case "$arg" in
+      /*)    p="$arg" ;;
+      "~/"*) p="$HOME/${arg#\~/}" ;;
+      *)     p="$root/$arg" ;;
+    esac
+    if [ ! -f "$p" ]; then
+      case "$arg" in
+        /*|"~/"*) ;;
+        *)
+          if [ -f "$PWD/$arg" ]; then
+            die "config file not found: $p (relative --config paths resolve from the repo root $root, not from the current directory. Use --config $(hint_path "$(abs_path "$PWD/$arg")" "$root"))"
+          fi
+          die "config file not found: $p (relative --config paths resolve from the repo root $root)"
+          ;;
+      esac
+      die "config file not found: $p"
+    fi
+    [ -r "$p" ] || die "config file is not readable: $p"
+  fi
+  abs_path "$p"
+}
 
 # conf_read output field separator is the ASCII unit separator (0x1f), not a
 # tab: bash read collapses runs of IFS-whitespace characters (tabs included),
@@ -213,6 +288,23 @@ $(codex_index_ids_since "$1")
 EOF
 }
 
+reg_follow_cli() { # $1 mailbox $2 role $3 configured cli
+  # A conversation id belongs to the CLI that minted it (claude and zai
+  # differ too: same binary, another backend). When the configured CLI is
+  # not the recorded one, park the entry as sessions/<role>.<cli> and bring
+  # back the entry parked for the configured CLI, if there is one. The role
+  # then never resumes a foreign id, and it finds its own conversation
+  # again when the config switches back.
+  local d="$1/sessions" was
+  was="$(reg_get "$1" "$2" CLI)"
+  [ -n "$was" ] && [ "$was" != "$3" ] || return 0
+  case "$was" in
+    codex|claude|zai) mv "$d/$2" "$d/$2.$was" ;;
+    *) rm -f "$d/$2" ;;   # not an entry this launcher wrote
+  esac
+  if [ -f "$d/$2.$3" ]; then mv "$d/$2.$3" "$d/$2"; fi
+}
+
 reg_set_codex_id() { # $1 mailbox $2 role $3 id — record discovered id, mark live
   local m="$1" r="$2"
   reg_write "$m" "$r" \
@@ -220,6 +312,125 @@ reg_set_codex_id() { # $1 mailbox $2 role $3 id — record discovered id, mark l
     "CWD=$(reg_get "$m" "$r" CWD)" "MODEL=$(reg_get "$m" "$r" MODEL)" \
     "STATUS=live" "STARTED_AT=$(reg_get "$m" "$r" STARTED_AT)" \
     "UPDATED_AT=$(now_utc)" "SNAPSHOT=$(reg_get "$m" "$r" SNAPSHOT)"
+}
+
+# ---------- active team record ---------------------------------------------------
+# <mailbox>/active: the tmux session that owns this repo's mailbox right now
+# and the config that started it. Same KEY=VALUE shape as the registry
+# (SESSION, CREATED, CONFIG, ROOT, STARTED_AT), written only by the launcher
+# and read with grep, never sourced. CREATED is the session's tmux creation
+# stamp: the record vouches for that one session. When the session is gone,
+# or another session took its name, the record is stale and ignored.
+team_get() { # $1 mailbox $2 key -> value ('' when absent)
+  [ -f "$1/active" ] || return 0
+  grep -E "^$2=" "$1/active" 2>/dev/null | tail -1 | cut -d= -f2-
+}
+
+team_write() { # $1 mailbox $2.. KEY=VALUE... (atomic replace)
+  local f="$1/active" kv
+  for kv in "${@:2}"; do printf '%s\n' "$kv"; done > "$f.tmp" && mv "$f.tmp" "$f"
+}
+
+session_created() { # $1 session name -> creation stamp ('' when not running)
+  tmux list-sessions -F '#{session_created} #{session_name}' 2>/dev/null \
+    | awk -v n="$1" '{ c = $1; sub(/^[^ ]+ /, ""); if ($0 == n) { print c; exit } }'
+}
+
+default_conf() { # $1 team root -> default config path ('' when there is none)
+  local p="$1/ai-team.conf"
+  [ -f "$p" ] || p="$TOOL_HOME/ai-team.conf"
+  [ -f "$p" ] || return 0
+  abs_path "$p"
+}
+
+conf_session() { # $1 team root $2 conf -> session name that config yields ('' if unreadable)
+  local out
+  [ -n "$2" ] || return 0
+  out="$(conf_read "$2" 2>/dev/null)" || return 0
+  session_name "$1" "$(printf '%s' "$out" | head -1 | cut -d "$TSV_SEP" -f1)"
+}
+
+# find_active <mailbox> <default conf> <session name>...
+# Sets ACTIVE_SESSION and ACTIVE_CONFIG for the team running in this repo
+# (both '' when none runs) and ACTIVE_RECORDED (1 when the launch record
+# vouches for it). A running session under one of the given names without a
+# record was started by a launcher that wrote none. Such a launcher knew
+# the default config only, so that is the config it is attributed to.
+find_active() {
+  local mailbox="$1" dconf="$2" name created
+  ACTIVE_SESSION="" ACTIVE_CONFIG="" ACTIVE_RECORDED=0
+  name="$(team_get "$mailbox" SESSION)"
+  if [ -n "$name" ]; then
+    created="$(session_created "$name")"
+    if [ -n "$created" ] && [ "$created" = "$(team_get "$mailbox" CREATED)" ]; then
+      ACTIVE_SESSION="$name"
+      ACTIVE_CONFIG="$(team_get "$mailbox" CONFIG)"
+      ACTIVE_RECORDED=1
+      return 0
+    fi
+  fi
+  for name in "${@:3}"; do
+    [ -n "$name" ] || continue
+    if [ -n "$(session_created "$name")" ]; then
+      ACTIVE_SESSION="$name"
+      ACTIVE_CONFIG="$dconf"
+      return 0
+    fi
+  done
+}
+
+hint_conf() { # $1 conf $2 team root $3 default conf -> ' --config <path>' ('' for the default)
+  [ -n "$1" ] && [ "$1" != "$3" ] || return 0
+  printf ' --config %s' "$(hint_path "$1" "$2")"
+}
+
+# refuse_other_config <mode> <requested conf> <team root> <default conf>
+# The running team was started with another config: explain, change nothing.
+refuse_other_config() {
+  local mode="$1" req="$2" root="$3" dconf="$4" running
+  running="${ACTIVE_CONFIG:-unknown}"
+  [ "$ACTIVE_RECORDED" = 1 ] || running="$running (no launch record: assumed)"
+  say "session $ACTIVE_SESSION is running with another config. Nothing was changed."
+  say "  running:   $running"
+  say "  requested: $req"
+  say "One team runs per repo: the mailbox and the role worktrees are shared. Stop the running session before switching configs."
+  case "$mode" in
+    up)
+      say "  stop it:       scripts/ai-team --kill"
+      say "  then start:    scripts/ai-team up$(hint_conf "$req" "$root" "$dconf")"
+      say "  or go back to the running team: scripts/ai-team up$(hint_conf "$ACTIVE_CONFIG" "$root" "$dconf")"
+      ;;
+    *)
+      say "  $mode without --config acts on the running team: scripts/ai-team $mode"
+      ;;
+  esac
+  exit 1
+}
+
+# follow_team <mode> <team root> <mailbox> <--config value>
+# What --verify and --kill act on. Without --config they follow the running
+# team, whichever config started it, and fall back to the default config
+# when nothing runs. With --config, that config must be the running one.
+# Sets ACTIVE_* (find_active), T_CONF ('' = no config file to read), and
+# T_NAMED (1 = T_CONF is a config somebody chose: it has to exist and parse).
+follow_team() {
+  local mode="$1" root="$2" mailbox="$3" arg="$4" dconf req=""
+  dconf="$(default_conf "$root")"
+  if [ -n "$arg" ]; then
+    req="$(resolve_conf "$root" "$arg")" || exit $?
+  fi
+  find_active "$mailbox" "$dconf" "$(conf_session "$root" "$req")" "$(conf_session "$root" "$dconf")"
+  T_NAMED=1
+  if [ -n "$req" ]; then
+    [ -z "$ACTIVE_SESSION" ] || [ "$ACTIVE_CONFIG" = "$req" ] \
+      || refuse_other_config "$mode" "$req" "$root" "$dconf"
+    T_CONF="$req"
+  elif [ -n "$ACTIVE_SESSION" ] && [ -n "$ACTIVE_CONFIG" ] && [ "$ACTIVE_CONFIG" != "$dconf" ]; then
+    T_CONF="$ACTIVE_CONFIG"
+  else
+    T_CONF="$dconf"
+    T_NAMED=0
+  fi
 }
 
 # ---------- init ---------------------------------------------------------------
@@ -275,20 +486,18 @@ PY
 
 # ---------- up -----------------------------------------------------------------
 
-cmd_up() {
-  local mode_attach=1
-  [ "${1:-}" = "--no-attach" ] && mode_attach=0
+cmd_up() { # $1 attach (1|0)  $2 --config value ('' = default config)
+  local mode_attach="$1" conf_arg="$2"
 
   command -v tmux >/dev/null 2>&1 || die "tmux not found (brew install tmux / apt install tmux)"
   command -v python3 >/dev/null 2>&1 || die "python3 not found"
 
   local root conf
-  root="$(repo_root)" || exit $?
-  conf="$root/ai-team.conf"
-  [ -f "$conf" ] || conf="$TOOL_HOME/ai-team.conf"
-  [ -f "$conf" ] || die "no ai-team.conf (run: scripts/ai-team init)"
+  root="$(team_root)" || exit $?
+  conf="$(resolve_conf "$root" "$conf_arg")" || exit $?
   local confdesc="tool-home"
-  [ "$conf" = "$root/ai-team.conf" ] && confdesc="project"
+  [ "$conf" = "$(abs_path "$root/ai-team.conf")" ] && confdesc="project"
+  [ -n "$conf_arg" ] && confdesc="--config"
 
   local confout prefix zai_env_raw ttl
   confout="$(conf_read "$conf")" || die "cannot parse $conf"
@@ -300,7 +509,16 @@ cmd_up() {
   local sess
   sess="$(session_name "$root" "$prefix")"
 
-  if tmux has-session -t "=$sess" 2>/dev/null; then
+  # One team per repo: look for a running team before any side effect. The
+  # config that started it reattaches. Any other config is refused.
+  local common mailbox dconf
+  common="$(git_common_dir "$root")" || exit $?
+  mailbox="$common/ai-team"
+  dconf="$(default_conf "$root")"
+  find_active "$mailbox" "$dconf" "$sess" "$(conf_session "$root" "$dconf")"
+  if [ -n "$ACTIVE_SESSION" ]; then
+    [ "$ACTIVE_CONFIG" = "$conf" ] || refuse_other_config up "$conf" "$root" "$dconf"
+    sess="$ACTIVE_SESSION"
     say "session $sess already running — reattaching (no duplicate launched)"
     [ "$mode_attach" = 1 ] && exec tmux attach-session -t "=$sess"
     echo "$sess"
@@ -342,9 +560,6 @@ EOF
   CLAUDE_BIN="$(command -v claude)"
 
   # ---- workspace: mailbox + worktrees ----------------------------------------
-  local common mailbox
-  common="$(git_common_dir "$root")" || exit $?
-  mailbox="$common/ai-team"
   mkdir -p "$mailbox/tasks" "$mailbox/acks" "$mailbox/sessions" || die "cannot create mailbox at $mailbox"
   ensure_exclude "$common" ".ai-team-worktrees/"
 
@@ -386,6 +601,18 @@ AGENT_ROLE_FILE=$qfile AGENT_MAILBOX=$qmailbox AGENT_LIB_DIR=$qlib;"
     local base="" bin
     sflag="--session-id"
     [ "$pmode" = resume ] && sflag="--resume"
+    # The Delegator is the user's interface: a fresh one acknowledges and
+    # reports READY by itself, whatever CLI runs it. claude and zai carry
+    # the role file in the system prompt, so their first message skips it
+    # (codex has no such flag and gets the file named in its prompt below).
+    # Workers get no message and idle until addressed. A resumed
+    # conversation has had its handshake. The message is quoted as a whole:
+    # it reaches the CLI as one argument whatever the paths contain.
+    local hello=""
+    if [ "$prole" = delegator ] && [ "$pmode" != resume ]; then
+      hello=" $(shell_quote "You are the team Delegator. Your role file is loaded in the system prompt. \
+Read AGENTS.md in $(shell_quote "$pcwd"), run: bash $qlib/task.sh ack, and reply READY only.")"
+    fi
     case "$pcli" in
       codex)
         bin="$(shell_quote "$CODEX_BIN")"
@@ -410,13 +637,13 @@ Then read AGENTS.md in $(shell_quote "$pcwd"), run: bash $qlib/task.sh ack, and 
         bin="$(shell_quote "$CLAUDE_BIN")"
         base="unset $CLAUDE_ROUTING_VARS; $bin $sflag $(shell_quote "$psid") --model $(shell_quote "$pmodel")"
         [ -n "$peffort" ] && base="$base --effort $(shell_quote "$peffort")"
-        base="$base --append-system-prompt-file $qfile"
+        base="$base --append-system-prompt-file $qfile$hello"
         ;;
       zai)
         bin="$(shell_quote "$CLAUDE_BIN")"
         base="unset $CLAUDE_ROUTING_VARS; . $(shell_quote "$zai_env") && $bin $sflag $(shell_quote "$psid") --model $(shell_quote "$pmodel")"
         [ -n "$peffort" ] && base="$base --effort $(shell_quote "$peffort")"
-        base="$base --append-system-prompt-file $qfile"
+        base="$base --append-system-prompt-file $qfile$hello"
         ;;
     esac
     printf '%s %s' "$envs" "$base"
@@ -424,10 +651,11 @@ Then read AGENTS.md in $(shell_quote "$pcwd"), run: bash $qlib/task.sh ack, and 
 
   # ---- build the tmux session -------------------------------------------------
   say "building session $sess (panes will show role labels; CLIs boot in place)"
-  local -a order_roles order_cmds order_cwds
+  local -a order_roles order_clis order_cmds order_cwds
   local line idx=0
   while IFS="$TSV_SEP" read -r role label cli model effort worktree; do
     order_roles[$idx]="$role"
+    order_clis[$idx]="$cli"
     local cwd="$root"
     [ "$worktree" = "yes" ] && cwd="$wt_root/$role"
     order_cwds[$idx]="$cwd"
@@ -437,6 +665,7 @@ Then read AGENTS.md in $(shell_quote "$pcwd"), run: bash $qlib/task.sh ack, and 
     # or discover codex's minted id after boot. Never --continue/--last:
     # panes share cwd, so "most recent" could cross roles.
     local sid mode status snap=""
+    reg_follow_cli "$mailbox" "$role" "$cli"
     sid="$(reg_get "$mailbox" "$role" SESSION_ID)"
     case "$cli" in
       claude|zai)
@@ -490,6 +719,8 @@ EOF
   tmux new-session -d -s "$sess" -n team -c "${order_cwds[0]}" "${order_cmds[0]}"
   tmux has-session -t "=$sess" 2>/dev/null \
     || die "pane boot failed: '${order_roles[0]}' exited immediately (session rolled back). Run its pane command by hand to see why — common causes: invalid model id, CLI auth/config error."
+  team_write "$mailbox" "SESSION=$sess" "CREATED=$(session_created "$sess")" \
+    "CONFIG=$conf" "ROOT=$root" "STARTED_AT=$(now_utc)"
   local p0 p1 p2 p3 p4 p5
   p0="$(pane_ids_of)"
   tmux rename-window -t "=$sess" "team"
@@ -556,6 +787,7 @@ EOF
     case "$_pid" in
       %*) ;;
       *) tmux kill-session -t "=$sess" 2>/dev/null
+         rm -f "$mailbox/active"
          die "pane boot failed: '${order_roles[$_i]}' exited immediately or its pane id could not be captured (session rolled back). Run the pane command by hand to see why." ;;
     esac
     _i=$((_i + 1))
@@ -598,8 +830,10 @@ $tsv
 EOF
 
   say "workspace up: $sess"
-  say "delegator = pane $p0 (codex). Workers idle until addressed — role files are pre-loaded via system prompt (claude/zai) or the startup prompt (codex)."
-  say "voice: the Codex CLI has no voice mode; use Codex.app separately if you need voice."
+  say "config: $conf"
+  say "${order_roles[0]} = pane $p0 (${order_clis[0]}). Workers idle until addressed. Role files are pre-loaded via system prompt (claude/zai) or the startup prompt (codex)."
+  [ "${order_clis[0]}" = codex ] \
+    && say "voice: the Codex CLI has no voice mode; use Codex.app separately if you need voice."
   if [ "$mode_attach" = 1 ]; then
     exec tmux attach-session -t "=$sess"
   fi
@@ -608,14 +842,27 @@ EOF
 
 # ---------- verify / check-models / kill ----------------------------------------
 
-cmd_verify() {
+# team_confout <team root>: parsed records of T_CONF (follow_team). The
+# default config keeps the lenient fallback it always had here.
+team_confout() {
+  if [ "$T_NAMED" = 1 ]; then
+    [ -f "$T_CONF" ] || die "config file not found: $T_CONF (session $ACTIVE_SESSION was started with it)"
+    conf_read "$T_CONF" || die "cannot parse $T_CONF"
+  else
+    conf_read "${T_CONF:-$1/ai-team.conf}" 2>/dev/null || conf_read "$TOOL_HOME/ai-team.conf"
+  fi
+}
+
+cmd_verify() { # $1 --config value ('' = the running team, else the default config)
   local root confout prefix sess
-  root="$(repo_root)" || exit $?
-  confout="$(conf_read "$root/ai-team.conf" 2>/dev/null || conf_read "$TOOL_HOME/ai-team.conf")"
-  prefix="$(printf '%s' "$confout" | head -1 | cut -d "$TSV_SEP" -f1)"
-  sess="$(session_name "$root" "$prefix")"
+  root="$(team_root)" || exit $?
   local mailbox; mailbox="$(git_common_dir "$root")/ai-team" || exit $?
+  follow_team --verify "$root" "$mailbox" "$1"
+  confout="$(team_confout "$root")" || exit $?
+  prefix="$(printf '%s' "$confout" | head -1 | cut -d "$TSV_SEP" -f1)"
+  sess="${ACTIVE_SESSION:-$(session_name "$root" "$prefix")}"
   echo "session: $sess ($(tmux has-session -t "=$sess" 2>/dev/null && echo up || echo DOWN))"
+  echo "config:  ${T_CONF:-none}"
   while IFS="$TSV_SEP" read -r role label cli model effort worktree; do
     local pid ack="no" alive="gone" ack_time="" bid=""
     pid=$(awk -F '\t' -v r="$role" '$1 == r {print $2; exit}' "$mailbox/panes.tsv" 2>/dev/null)
@@ -643,11 +890,10 @@ EOF
   echo "ack=no means the pane has not yet acted on its first message (role file is still pre-loaded via system prompt / startup prompt)."
 }
 
-cmd_check_models() {
+cmd_check_models() { # $1 --config value ('' = default config)
   local root conf confout zai_env_raw zai_env
-  root="$(repo_root)" || exit $?
-  conf="$root/ai-team.conf"
-  [ -f "$conf" ] || conf="$TOOL_HOME/ai-team.conf"
+  root="$(team_root)" || exit $?
+  conf="$(resolve_conf "$root" "$1")" || exit $?
   confout="$(conf_read "$conf")" || die "cannot parse $conf"
   zai_env_raw="$(printf '%s' "$confout" | head -1 | cut -d "$TSV_SEP" -f2)"
   zai_env="${zai_env_raw/#\~/$HOME}"
@@ -693,25 +939,70 @@ $(printf '%s' "$confout" | tail -n +2)
 EOF
 }
 
-cmd_kill() {
-  local root confout prefix sess
-  root="$(repo_root)" || exit $?
-  confout="$(conf_read "$root/ai-team.conf" 2>/dev/null || conf_read "$TOOL_HOME/ai-team.conf")"
-  prefix="$(printf '%s' "$confout" | head -1 | cut -d "$TSV_SEP" -f1)"
-  sess="$(session_name "$root" "$prefix")"
+cmd_kill() { # $1 --config value ('' = the running team, else the default config)
+  local root confout prefix sess mailbox recorded
+  root="$(team_root)" || exit $?
+  mailbox="$(git_common_dir "$root")/ai-team" || exit $?
+  follow_team --kill "$root" "$mailbox" "$1"
+  sess="$ACTIVE_SESSION"
+  if [ -z "$sess" ]; then
+    # nothing runs: name the session this config would have started
+    confout="$(team_confout "$root")" || exit $?
+    prefix="$(printf '%s' "$confout" | head -1 | cut -d "$TSV_SEP" -f1)"
+    sess="$(session_name "$root" "$prefix")"
+  fi
   tmux kill-session -t "=$sess" 2>/dev/null && say "killed $sess" || say "no session $sess"
+  # drop the launch record unless its session is, against all odds, still there
+  recorded="$(team_get "$mailbox" SESSION)"
+  [ -n "$recorded" ] && [ -n "$(session_created "$recorded")" ] || rm -f "$mailbox/active"
   say "worktrees and branches are left in place (inspect .ai-team-worktrees/)"
 }
 
 # ---------- main -----------------------------------------------------------------
 
-case "${1:-up}" in
-  init)          shift; cmd_init "$@" ;;
-  up)            shift; cmd_up "${1:-}" ;;
-  --no-attach)   cmd_up --no-attach ;;
-  --verify)      shift; cmd_verify "$@" ;;
-  --check-models) shift; cmd_check_models "$@" ;;
-  --kill)        shift; cmd_kill "$@" ;;
-  -h|--help)     usage ;;
-  *)             usage; die "unknown argument: $1" ;;
+# Mode and flags may come in any order. Everything is parsed and checked
+# before any mode runs, so a mistyped command line has no side effects.
+MODE="" NO_ATTACH=0 CONFIG="" CONFIG_GIVEN=0
+
+pick_mode() {
+  [ -z "$MODE" ] || [ "$MODE" = "$1" ] || die "choose one mode: '$MODE' and '$1' cannot be combined"
+  MODE="$1"
+}
+
+while [ $# -gt 0 ]; do
+  case "$1" in
+    init|up|--verify|--check-models|--kill) pick_mode "$1" ;;
+    --no-attach) NO_ATTACH=1 ;;
+    --config|--config=*)
+      [ "$CONFIG_GIVEN" = 0 ] || die "--config given more than once"
+      if [ "$1" = "--config" ]; then
+        [ $# -ge 2 ] || die "--config requires a file path (e.g. --config ai-team.claude.conf)"
+        shift
+        CONFIG="$1"
+      else
+        CONFIG="${1#--config=}"
+      fi
+      case "$CONFIG" in
+        ""|-*) die "--config requires a file path, got '$CONFIG' (e.g. --config ai-team.claude.conf)" ;;
+      esac
+      CONFIG_GIVEN=1
+      ;;
+    -h|--help) usage; exit 0 ;;
+    *) usage; die "unknown argument: $1" ;;
+  esac
+  shift
+done
+
+MODE="${MODE:-up}"
+[ "$NO_ATTACH" = 0 ] || [ "$MODE" = up ] \
+  || die "--no-attach applies to up only, not to $MODE"
+[ "$CONFIG_GIVEN" = 0 ] || [ "$MODE" != init ] \
+  || die "--config does not apply to init, which reads no config. Pass it to up, --verify, --check-models, or --kill"
+
+case "$MODE" in
+  init)           cmd_init ;;
+  up)             cmd_up "$((1 - NO_ATTACH))" "$CONFIG" ;;
+  --verify)       cmd_verify "$CONFIG" ;;
+  --check-models) cmd_check_models "$CONFIG" ;;
+  --kill)         cmd_kill "$CONFIG" ;;
 esac

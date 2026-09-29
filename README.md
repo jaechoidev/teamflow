@@ -51,6 +51,91 @@ Models, CLIs, and effort levels are config, not code: edit `ai-team.conf`
 launcher never silently substitutes a model — if something is missing it
 says exactly what and where to fix it.
 
+## Choosing a config
+
+`ai-team.conf` is the default. Every mode that reads a config takes
+another file with `--config`:
+
+```
+./scripts/ai-team up --config <file>              # launch or reattach
+./scripts/ai-team up --no-attach --config <file>  # same, detached
+./scripts/ai-team --verify --config <file>
+./scripts/ai-team --check-models --config <file>
+./scripts/ai-team --kill --config <file>
+```
+
+Mode and flags go in any order, and `--config=<file>` works too. `init`
+takes no config. A variant is a complete config: the `[workspace]`
+section plus all six `[pane.<role>]` sections. Without `--config`
+everything behaves as before.
+
+**Paths.** An absolute path is used as given, and a leading `~/` means
+your home directory. A relative path resolves from the repo root, never
+from the current directory. The same spelling therefore names the same
+file from a subdirectory and from a team worktree under
+`.ai-team-worktrees/`. When the file is missing, the error prints the
+full path the launcher looked for.
+
+**One team per repo.** The mailbox and the role worktrees belong to the
+repo, not to a config, so two configs cannot run side by side. The
+launcher records the running session and the config that started it in
+`.git/ai-team/active` and checks it before it touches anything:
+
+- `up` with the config that started the running team reattaches.
+- `up` with any other config stops, names both configs, and changes
+  nothing. Plain `up` while a variant runs is such a case.
+- `--verify` and `--kill` without `--config` act on the running team,
+  whichever config started it. With `--config`, the file must be the
+  one the running team was started with.
+- `--check-models` only reads the config. It works while another
+  config runs, so use it before a switch.
+
+Switching is always stop, then start:
+
+```
+./scripts/ai-team --kill
+./scripts/ai-team up --config ai-team.claude.conf
+```
+
+### Example: a Claude Delegator
+
+```
+cp ai-team.conf ai-team.claude.conf
+```
+
+Edit the Delegator section of the copy and leave the rest alone:
+
+```
+[pane.delegator]
+label = Delegator (claude fable)
+cli = claude
+model = fable
+effort = medium
+worktree = no
+```
+
+Then check the models, stop the running team, and start the variant:
+
+```
+./scripts/ai-team --check-models --config ai-team.claude.conf
+./scripts/ai-team --kill
+./scripts/ai-team up --config ai-team.claude.conf
+./scripts/ai-team --verify        # reports the running team and its config
+```
+
+A fresh Claude or z.ai Delegator gets the same handshake as the Codex
+one: a first message that tells it to read AGENTS.md, write its
+acknowledgement, and reply READY. Its role file arrives through the
+system prompt, as for every Claude pane. Workers still get no startup
+message.
+
+Conversations follow the CLI. The Claude Delegator starts its own
+conversation and never resumes the Codex id. The Codex entry is parked
+as `.git/ai-team/sessions/delegator.codex`, and the next launch with
+`ai-team.conf` resumes it. Roles whose `cli` is the same in both configs
+keep their conversations across the switch. The role table in AGENTS.md
+lists the default CLIs. Roles and routing are the same in every config.
+
 ## Prerequisites
 
 - macOS or Linux; `tmux`, `python3`, and `git` ≥ 2.31 (the launcher uses
@@ -65,6 +150,8 @@ says exactly what and where to fix it.
 ## Daily use
 
 - **Launch/reattach**: `./scripts/ai-team up` (from anywhere inside the repo)
+- **Another config**: `./scripts/ai-team up --config <file>`, one team at
+  a time (see Choosing a config)
 - **Talk**: type to the Delegator (left pane); it dispatches to workers and
   reports real results. You can also type directly into any worker pane.
 - **Dispatch protocol**: tasks go through the mailbox — the Delegator does
@@ -135,6 +222,9 @@ reviewed work enters main; nothing is pushed without your approval.
   `acks/`, `panes.tsv`, `sends.log`, `sessions/<role>` (per-role conversation
   registry; runtime state; excluded from git; instantly visible to all
   worktrees because it sits in the git common dir)
+- `.git/ai-team/active` - the running session and the config that
+  started it. `.git/ai-team/sessions/<role>.<cli>` - a conversation
+  parked while that role runs another CLI.
 - `.ai-team-worktrees/<role>` + branches `ai-team/<role>` — developer panes
   (created only if absent, never reset)
 - Repo-root `AGENTS.md` — shared coordination rules (marked section,
@@ -178,6 +268,12 @@ still wins):
   share a cwd, so "most recent in directory" could resume another role's
   conversation. The registry stores ids and metadata only — no tokens, no
   transcript content.
+- **A changed `cli`** (another config, or an edit) never resumes the old
+  id: an id belongs to the CLI that minted it, and `claude` and `zai`
+  count as different CLIs. The launcher parks the old entry as
+  `sessions/<role>.<cli>` and starts a fresh conversation, or restores
+  the one parked for the configured CLI. Switching back resumes where
+  that CLI left off.
 
 ## Voice, models, and other honest limitations
 
@@ -206,6 +302,15 @@ still wins):
   `.git/ai-team/sessions/delegator` to reset, or let `--verify` backfill).
   Two concurrent `up` runs in different terminals could resume the same id
   twice — run one at a time.
+- **Config selection**: a config is identified by its file path. Editing
+  a config while its team runs goes unnoticed, and the edit applies at
+  the next launch. The one-team check sees the tmux server the launcher
+  talks to, so a team on another tmux socket is not detected. A session
+  without a launch record (started by an older copy of the launcher) is
+  attributed to the default config. Codex support is built for the
+  Delegator pane: its startup prompt is worded for the Delegator, and id
+  discovery goes by working directory. A variant that runs Codex in a
+  worker role, or in two panes that share a directory, is untested.
 
 ## Tests
 
@@ -213,6 +318,8 @@ still wins):
 environment handoff, worktrees, mailbox concurrency, send-to quoting and the
 Delegator pane guard, task claim and completion exclusivity, init
 idempotence, doc template propagation and conventions, reattach,
-diagnostics, and conversation persistence (fresh IDs, resume after kill,
-rollover on missing transcripts, and role isolation).
+diagnostics, conversation persistence (fresh IDs, resume after kill,
+rollover on missing transcripts, and role isolation), and config
+selection (argument parsing, path resolution, one team per repo,
+conversations across a CLI change, and the Delegator handshake).
 Tests use stub CLIs and an isolated tmux socket, with no model quota.

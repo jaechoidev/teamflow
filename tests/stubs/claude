@@ -12,6 +12,9 @@ log="${STUB_LOG:?set STUB_LOG}"
   echo "MAILBOX=$AGENT_MAILBOX"
   echo "cwd=$PWD"
   echo "ROUTING BASE_URL=${ANTHROPIC_BASE_URL:-unset} AUTH_TOKEN=${ANTHROPIC_AUTH_TOKEN:+SET} MODEL=${ANTHROPIC_MODEL:-unset}"
+  # the final argument on its own, tagged by role: shows whether a startup
+  # prompt arrived, and that it arrived as one argument
+  echo "LASTARG[$AGENT_ROLE]=${@: -1}"
 } >> "$log"
 prev=""
 sid=""
