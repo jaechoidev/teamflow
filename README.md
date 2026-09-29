@@ -20,15 +20,15 @@ Run `init` from inside the repo you are adopting into, by path to this
 tool home, never from inside this repo to set up another project. If the
 target is a plain folder rather than a git repo, `git init` it first;
 skip that line for an existing repo. `init` copies `scripts/ai-team` and
-`.agents/` (roles, lib, AGENTS-SECTION.md) into the target repo, writes
-`ai-team.conf` only when absent (yours to edit; init never overwrites
-it), and updates only the marked AGENTS.md section. `up` then needs the
-repo to have at least one commit already (a fresh `git init` has none),
-so the fresh-repo step stages the scaffold paths only (`scripts/ai-team`
-by name, not all of `scripts/`), never `git add -A`. That first commit
-is a launcher requirement, not a Git limitation: role branches and
-worktrees are created from HEAD, and Git itself could make orphan
-worktrees even in an empty repo.
+`.agents/` (roles, lib, doc templates, AGENTS-SECTION.md) into the
+target repo, writes `ai-team.conf` only when absent (yours to edit, and
+init never overwrites it), and updates only the marked AGENTS.md
+section. `up` then needs the repo to have at least one commit already (a
+fresh `git init` has none), so the fresh-repo step stages the scaffold
+paths only (`scripts/ai-team` by name, not all of `scripts/`), never
+`git add -A`. That first commit is a launcher requirement, not a Git
+limitation: role branches and worktrees are created from HEAD, and Git
+itself could make orphan worktrees even in an empty repo.
 
 ## Pane map
 
@@ -139,6 +139,20 @@ reviewed work enters main; nothing is pushed without your approval.
   (created only if absent, never reset)
 - Repo-root `AGENTS.md` — shared coordination rules (marked section,
   `ai-team init` owns only the markers)
+- `.agents/doc-templates/` - note templates and the project notes workflow
+
+## Project notes
+
+`init` copies five plain Markdown templates into `.agents/doc-templates/`:
+source, concept, code map, decision, and experiment. They share one
+frontmatter convention with a review status, and the folder's README.md
+is the workflow. Using them is opt-in per project. Once adopted, the
+Delegator keeps notes (default `docs/notes/`) current with each
+implementation slice, workers supply evidence, and the user writes
+own-words explanations and memory answers in concept notes. Notes link to
+Superpowers specs and plans rather than copying them. Obsidian is
+optional: open `docs/` as a vault to browse notes, specs, and plans
+together. Init never creates a vault or `docs/`.
 
 ## Conversation persistence
 
@@ -198,6 +212,7 @@ still wins):
 `bash tests/run_all.sh` covers layout order, role routing,
 environment handoff, worktrees, mailbox concurrency, send-to quoting and the
 Delegator pane guard, task claim and completion exclusivity, init
-idempotence, reattach, diagnostics, and conversation persistence (fresh IDs,
-resume after kill, rollover on missing transcripts, and role isolation).
+idempotence, doc template propagation and conventions, reattach,
+diagnostics, and conversation persistence (fresh IDs, resume after kill,
+rollover on missing transcripts, and role isolation).
 Tests use stub CLIs and an isolated tmux socket, with no model quota.

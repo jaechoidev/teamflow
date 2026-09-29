@@ -230,10 +230,13 @@ cmd_init() {
   src="$TOOL_HOME"
   [ -f "$src/.agents/AGENTS-SECTION.md" ] || die "tool files incomplete at $src (missing .agents/AGENTS-SECTION.md)"
 
-  mkdir -p "$root/.agents/roles" "$root/.agents/lib" "$root/scripts"
+  mkdir -p "$root/.agents/roles" "$root/.agents/lib" "$root/.agents/doc-templates" "$root/scripts"
   local f
   for f in "$src"/.agents/roles/*.md; do
     install_file "$f" "$root/.agents/roles/$(basename "$f")"
+  done
+  for f in "$src"/.agents/doc-templates/*.md; do
+    install_file "$f" "$root/.agents/doc-templates/$(basename "$f")"
   done
   install_file "$src/.agents/lib/task.sh" "$root/.agents/lib/task.sh"
   install_file "$src/.agents/lib/pane.sh" "$root/.agents/lib/pane.sh"

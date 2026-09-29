@@ -39,5 +39,10 @@ Rules:
   integration flow has the user's approval; pushes still require approval.
 - Task records are scratch. Promote durable decisions/docs into tracked
   files only with user approval.
+- Project notes are opt-in. Once the user adopts them, they follow
+  `.agents/doc-templates/README.md` (default folder `docs/notes/`). The
+  Delegator keeps them current with each slice. Other roles supply evidence
+  in task results and edit notes only when assigned. Agents may propose
+  memory questions. Only the user writes own-words explanations and answers.
 - Keep task logs concise; never put secrets in them.
 # <<< ai-team <<<

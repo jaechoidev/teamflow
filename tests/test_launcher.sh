@@ -34,6 +34,13 @@ for f in ai-team.conf scripts/ai-team .agents/AGENTS-SECTION.md \
 done
 assert_contains "$(cat AGENTS.md)" "# >>> ai-team >>>" "init wrote marked AGENTS.md section"
 assert_contains "$(cat .git/info/exclude)" ".ai-team-worktrees/" "init excluded worktrees"
+# doc templates ship verbatim; init creates no Obsidian vault and no docs/
+for f in "$TOOL"/.agents/doc-templates/*.md; do
+  cmp -s "$f" ".agents/doc-templates/${f##*/}" \
+    && _PASS=$((_PASS+1)) || { echo "FAIL: init did not copy doc template ${f##*/}"; _FAIL=$((_FAIL+1)); }
+done
+[ ! -e .obsidian ] && [ ! -e docs ] \
+  && _PASS=$((_PASS+1)) || { echo "FAIL: init created a vault or docs/"; _FAIL=$((_FAIL+1)); }
 
 # init outside a git repo: one clear diagnostic, nonzero exit, zero side effects
 NONGIT="$(mktemp -d)"
@@ -100,6 +107,16 @@ echo "# local patch" >> .agents/lib/pane.sh
 bash "$TOOL/scripts/ai-team" init 2>/dev/null
 assert_contains "$(cat .agents/lib/pane.sh)" "# local patch" "user lib edits survive re-init"
 mv .agents/lib/pane.sh.new .agents/lib/pane.sh
+# doc templates follow the same rule, and user-added templates are left alone
+echo "my template tweak" >> .agents/doc-templates/decision.md
+echo "my own template" > .agents/doc-templates/meeting.md
+bash "$TOOL/scripts/ai-team" init 2>/dev/null
+assert_contains "$(cat .agents/doc-templates/decision.md)" "my template tweak" "user template edits survive re-init"
+cmp -s "$TOOL/.agents/doc-templates/decision.md" .agents/doc-templates/decision.md.new \
+  && _PASS=$((_PASS+1)) || { echo "FAIL: shipped template not staged as .new"; _FAIL=$((_FAIL+1)); }
+assert_eq "my own template" "$(cat .agents/doc-templates/meeting.md)" "user-added template kept"
+mv .agents/doc-templates/decision.md.new .agents/doc-templates/decision.md
+rm .agents/doc-templates/meeting.md
 
 # --- up with stub CLIs ---------------------------------------------------------
 sed -i '' "s|^zai_env = .*|zai_env = $STUBS/zai-env.sh|" ai-team.conf
