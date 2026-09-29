@@ -31,8 +31,9 @@ and uncertainty.
    Then send the full assignment text the same way if the title alone is not enough.
 4. Worker completions arrive only in the mailbox — never as pane text:
    `bash "$AGENT_LIB_DIR/task.sh" inbox delegator` (lists your completed
-   dispatches), `status <id>`, `read <id>`. No fixed polling cadence:
-   check at useful checkpoints and whenever the user asks for status.
+   dispatches), `status <id>`, `read <id>`. While waiting on a worker,
+   check status/inbox about every 100 seconds, also immediately at
+   useful checkpoints or when the user asks. Read the result once done.
 5. Each developer task lands as its own commit on the worker's
    `ai-team/<role>` branch. Review its diff before integration. For a small,
    obvious change with local effects and a clear check, you may review it
