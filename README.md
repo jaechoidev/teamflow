@@ -377,6 +377,30 @@ collision with already-integrated work stops as a conflict you resolve
 deliberately. No role's checkout ever overwrites another's files. Only
 reviewed work enters main; nothing is pushed without your approval.
 
+## When the Delegator leaves
+
+A team started in workers mode stops by itself after its Delegator is gone,
+so closing your agent does not leave workers running. Every teamflow command
+the Delegator runs records its agent session in `.git/teamflow/delegator`,
+and a watcher that runs as a tmux background job checks it every 30 seconds:
+
+1. When the Delegator's process is gone, the watcher waits 10 minutes. You
+   may be restarting or resuming the agent, and a new session that runs any
+   teamflow command takes over and cancels the stop.
+2. It then waits while any task is assigned or in progress, or a note is
+   being written, so finished results reach the mailbox. It waits up to
+   2 hours in case a worker hangs.
+3. It stops the team like `--kill`: merged worktrees are removed, and every
+   other worktree is kept. Nothing is discarded, and conversations resume
+   with `teamflow start --last` or `teamflow add`.
+
+This works however the agent ends, including a closed terminal, a crash, or
+`kill -9`, which agent exit hooks miss. For Claude Code and similar agents,
+the Delegator is the agent's process. Codex runs commands through a shared
+app-server daemon, so for Codex the Delegator counts as present while any
+Codex session has the project open. `teamflow --verify` shows the Delegator
+and the watcher, and `.git/teamflow/watch.log` records what the watcher did.
+
 ## Stopping and worktrees
 
 `--kill` stops the tmux session, then looks at each stopped worker's

@@ -129,6 +129,9 @@ Report the slice without notes.
 
 ## 5. Trim and stop
 
+The team stops by itself 10 minutes after this session ends, once in-progress
+tasks finish (up to 2 hours). Every teamflow command you run marks this
+session as the Delegator, so a resumed or restarted session takes over.
 When workers sit idle and the user wants them gone, follow the
 `teamflow-trim` skill. When the user asks to stop the team, follow the
 `teamflow-kill` skill. It stops the tmux session, removes worktrees whose work

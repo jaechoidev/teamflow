@@ -206,6 +206,32 @@ worker_window() { # $1 pane id: a worker's window keeps its ID as its name,
   tmux set-window-option -t "$1" monitor-activity on >/dev/null
 }
 
+note_delegator() { # $1 root: record the calling agent session as the Delegator
+  case "${AGENT_ROLE:-}" in ""|delegator) ;; *) return 0 ;; esac
+  [ -f "$1/.agents/lib/delegator.sh" ] || return 0
+  bash "$1/.agents/lib/delegator.sh" register 2>/dev/null
+  return 0
+}
+
+start_watcher() { # $1 mailbox $2 root $3 session: one watcher per team (see .agents/lib/watch.sh)
+  local mailbox="$1" root="$2" sess="$3" pid socket cmd arg
+  [ -f "$root/.agents/lib/watch.sh" ] || return 0
+  pid="$(cat "$mailbox/watcher" 2>/dev/null)"
+  if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null && ps -o command= -p "$pid" 2>/dev/null | grep -q 'watch\.sh'; then
+    return 0
+  fi
+  socket="$(tmux display-message -p -t "=$sess:" '#{socket_path}')" || return 0
+  cmd="bash"
+  # TEAMFLOW_WATCH_GRACE, _CAP, and _EVERY (seconds) exist for tests only.
+  for arg in "$root/.agents/lib/watch.sh" "$socket" "$sess" "$(session_created "$sess")" "$mailbox" \
+      "$TOOL_HOME/scripts/teamflow" "$root" "${TEAMFLOW_WATCH_GRACE:-600}" \
+      "${TEAMFLOW_WATCH_CAP:-7200}" "${TEAMFLOW_WATCH_EVERY:-30}"; do
+    cmd="$cmd $(shell_quote "$arg")"
+  done
+  # run-shell expands #{...} formats, so any # in a path is doubled.
+  tmux run-shell -b -t "=$sess:" "${cmd//#/##} >/dev/null 2>&1"
+}
+
 install_scaffold() { # $1 root -> installed project paths on stdout
   # Unmodified copies follow the tool home. Local edits win, and the shipped
   # copy is staged as <file>.new (see scripts/teamflow_scaffold.py).
@@ -744,6 +770,10 @@ cmd_up() { # $1 attach (1|0)  $2 --config value ('' = default config)  $3 worker
       [ -z "$absent" ] || say "this session runs without these default workers: $absent. Add one with: teamflow workers add <id>"
     fi
     sess="$ACTIVE_SESSION"
+    if [ "$team_mode" = workers ]; then
+      note_delegator "$root"
+      start_watcher "$mailbox" "$root" "$sess"
+    fi
     say "session $sess already running — reattaching (no duplicate launched)"
     [ "$mode_attach" = 1 ] && exec tmux attach-session -t "=$sess"
     echo "$sess"
@@ -960,6 +990,11 @@ EOF
     AGENT_MAILBOX="$mailbox" bash "$root/.agents/lib/note-queue.sh" poke
   fi
 
+  if [ "$team_mode" = workers ]; then
+    note_delegator "$root"
+    start_watcher "$mailbox" "$root" "$sess"
+  fi
+
   say "workspace up: $sess"
   say "config: $conf"
   if [ "$team_mode" = workers ]; then
@@ -1002,7 +1037,23 @@ cmd_verify() { # $1 --config value ('' = the running team, else the default conf
   sess="${ACTIVE_SESSION:-$(session_name "$root" "$prefix")}"
   echo "session: $sess ($(tmux has-session -t "=$sess" 2>/dev/null && echo up || echo DOWN))"
   echo "config:  ${T_CONF:-none}"
-  [ "$ACTIVE_MODE" = workers ] && echo "mode:    workers only (the Delegator runs outside tmux)"
+  if [ "$ACTIVE_MODE" = workers ]; then
+    echo "mode:    workers only (the Delegator runs outside tmux)"
+    note_delegator "$root"
+    local dpid dname dkind dstate wpid
+    dpid="$(grep '^PID=' "$mailbox/delegator" 2>/dev/null | cut -d= -f2)"
+    dname="$(grep '^NAME=' "$mailbox/delegator" 2>/dev/null | cut -d= -f2-)"
+    dkind="$(grep '^KIND=' "$mailbox/delegator" 2>/dev/null | cut -d= -f2)"
+    dstate=gone
+    bash "$root/.agents/lib/delegator.sh" alive 2>/dev/null && dstate=present
+    wpid="$(cat "$mailbox/watcher" 2>/dev/null)"
+    if [ "$dkind" = codex ]; then
+      echo "delegator: Codex, any Codex session in this project ($dstate)"
+    else
+      echo "delegator: ${dname:-unknown} (pid ${dpid:-none}, $dstate)"
+    fi
+    echo "watcher:   $([ -n "$wpid" ] && kill -0 "$wpid" 2>/dev/null && echo "running (pid $wpid)" || echo "not running"). Stops the team 10 minutes after the Delegator leaves, once tasks finish (log: .git/teamflow/watch.log)"
+  fi
   while IFS="$TSV_SEP" read -r role label cli model effort worktree worker_type role_file; do
     local pid ack="no" alive="gone" ack_time="" bid=""
     pid=$(awk -F '\t' -v r="$role" '$1 == r {print $2; exit}' "$mailbox/panes.tsv" 2>/dev/null)
@@ -1116,6 +1167,7 @@ cmd_trim() { # $1 --config value: remove idle workers from the running session
   root="$(team_root)" || exit $?
   prepare_project "$root"
   follow_team trim "$root" "$(git_common_dir "$root")/$MAILBOX_NAME" "$1"
+  note_delegator "$root"
   [ -n "$ACTIVE_SESSION" ] || die "no team is running, so there are no workers to trim"
   python3 "$TOOL_HOME/scripts/teamflow_workers.py" trim "$T_CONF" "$root"
   rc=$?
@@ -1133,6 +1185,7 @@ cmd_view() { # $1 --config value  $2 close (1|0)  $3.. worker IDs
   shift 2
   root="$(team_root)" || exit $?
   follow_team view "$root" "$(git_common_dir "$root")/$MAILBOX_NAME" "$conf_arg"
+  note_delegator "$root"
   [ -n "$ACTIVE_SESSION" ] || die "no team is running, so there is nothing to view"
   local -a args=(view "$T_CONF" "$root")
   [ "$close" = 0 ] || args+=(--close)
@@ -1196,6 +1249,7 @@ cmd_workers() { # $1 config argument $2 action $3 value $4 save (1|0)
   prepare_project "$root"
   follow_team workers "$root" "$(git_common_dir "$root")/$MAILBOX_NAME" "$1"
   conf="$T_CONF"
+  note_delegator "$root"
   [ -n "$2" ] || die "usage: teamflow list | add <type-or-id> [--save] | remove <id> [--save] | sync"
   # On demand: with no team running, add starts one with just this worker.
   if [ "$2" = add ] && [ -z "$ACTIVE_SESSION" ] && [ "${4:-0}" = 0 ]; then
