@@ -37,6 +37,10 @@ After that, `teamflow` is an ordinary command on `PATH`:
 
 `install` keeps earlier version directories so the user can switch back. It never removes a version that a running team still uses.
 
+## Only workers mode
+
+The Delegator always runs in the user's own agent session. The full-team mode, which ran a Delegator inside tmux, is removed together with `[pane.delegator]`. `up` and `start` both launch workers only, and `--workers` is accepted without effect. `init` removes a `[pane.delegator]` section from a project's config and says so. A team that an older version started in full-team mode is refused until `--kill`.
+
 ## Runtime paths
 
 The launcher resolves `current` to its version directory when a team starts. Worker panes, the watcher, and the lib directory (`AGENT_LIB_DIR`) use that resolved path. A running team therefore keeps the version it started with, and switching `current` affects the next start. `teamflow list` and `--verify` report the running team's version.
@@ -45,7 +49,7 @@ The launcher resolves `current` to its version directory when a team starts. Wor
 
 Committed to the project:
 
-- `teamflow.conf`, as today, plus `teamflow = <version>` in `[workspace]`: the lowest version the project needs. `init` writes the installed version there, and `doctor` and the stubs compare against it.
+- `teamflow.conf`, as today, plus `teamflow = <version>` in `[workspace]`: the lowest version the project needs. `init` writes the installed version there, and `doctor` and the stubs compare against it. The default `session_prefix` becomes `tf`, replacing `at`, a leftover from the ai-team name. A project that sets `at` keeps it.
 - Stub skills in `.claude/skills/<skill>/SKILL.md` and `.agents/skills/<skill>/SKILL.md`, one per shipped skill.
 - A short managed section in `AGENTS.md`: the project uses teamflow, where coordination state lives, and the install recommendation below.
 - `.agents/roles/<role>.md`, only for roles the user customized. The launcher looks for a role file in the project first, then in the installed version. `teamflow role edit <role>` copies the default into the project for editing.
