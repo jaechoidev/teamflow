@@ -12,18 +12,20 @@
 #   scripts/teamflow --check-models  probe configured models (spends a little
 #                                 quota; clean env, zai panes source zai_env)
 #   scripts/teamflow --kill        kill the workspace session
+#   scripts/teamflow workers list|add|remove|migrate  manage worker instances
 #
 # Flags:
 #   --config <file>  use this workspace config instead of teamflow.conf (start, up,
-#                    --verify, --check-models, --kill). A relative path
+#                    --verify, --check-models, --kill, workers). A relative path
 #                    resolves from the repo root, wherever you invoke from.
 #                    One team runs per repo: stop the running session with
 #                    --kill before starting another config.
 #   --no-attach      build detached (up only; start is always detached)
-#   --workers        up only: start the workers in one column and no
+#   --workers        up only: start tiled worker panes without a
 #                    Delegator pane. The Delegator runs in your own terminal
 #                    and reaches the mailbox through .agents/lib/delegator.sh.
 #                    [pane.delegator] is ignored and may be absent.
+#   --dry-run        preview workers migrate without changing files
 #   -h|--help        show this help
 #
 # Design notes:
@@ -144,31 +146,11 @@ TSV_SEP=$(printf '\037')
 
 # conf_read <conf-file> -> records on stdout, one per line, 0x1f-separated:
 #   workspace line: prefix SEP zai_env
-#   one line per pane (in order): role SEP label SEP cli SEP model SEP effort SEP worktree
+#   one line per pane: id SEP label SEP cli SEP model SEP effort SEP worktree SEP type SEP role_file
 conf_read() {
-  python3 - "$1" <<'PY'
-import sys, configparser, os
-SEP = "\x1f"
-cp = configparser.ConfigParser()
-cp.read(sys.argv[1])
-w = cp["workspace"] if cp.has_section("workspace") else {}
-prefix = w.get("session_prefix", "at")
-zai_env = w.get("zai_env", "~/.zai/env.sh")
-print(SEP.join([prefix, zai_env]))
-for sec in cp.sections():
-    if not sec.startswith("pane."):
-        continue
-    role = sec[len("pane."):]
-    p = cp[sec]
-    print(SEP.join([
-        role,
-        p.get("label", role),
-        p.get("cli", ""),
-        p.get("model", ""),
-        p.get("effort", ""),
-        p.get("worktree", "no"),
-    ]))
-PY
+  local root
+  root="$(team_root)" || return $?
+  python3 "$TOOL_HOME/scripts/teamflow_workers.py" parse "$1" "$root"
 }
 
 session_name() { # $1 root, $2 prefix
@@ -480,7 +462,8 @@ cmd_init() {
   mkdir -p "$root/.agents/roles" "$root/.agents/lib" "$root/.agents/doc-templates" "$root/scripts"
   local f skill rel scope
   local -a scaffold=(teamflow.conf AGENTS.md scripts/teamflow .agents/AGENTS-SECTION.md \
-    .agents/lib/task.sh .agents/lib/pane.sh .agents/lib/delegator.sh .agents/lib/note-queue.sh)
+    .agents/lib/task.sh .agents/lib/pane.sh .agents/lib/delegator.sh .agents/lib/note-queue.sh \
+    scripts/teamflow_workers.py)
   for f in "$src"/.agents/roles/*.md; do
     install_file "$f" "$root/.agents/roles/$(basename "$f")"
     scaffold+=(".agents/roles/$(basename "$f")")
@@ -489,7 +472,7 @@ cmd_init() {
     install_file "$f" "$root/.agents/doc-templates/$(basename "$f")"
     scaffold+=(".agents/doc-templates/$(basename "$f")")
   done
-  for skill in teamflow teamflow-resume teamflow-kill; do
+  for skill in teamflow teamflow-resume teamflow-kill teamflow-workers; do
     [ -f "$skills_src/$skill/SKILL.md" ] || die "tool files incomplete at $src (missing skills/$skill/SKILL.md)"
     while IFS= read -r -d '' f; do
       rel="${f#"$skills_src/$skill/"}"
@@ -506,16 +489,17 @@ cmd_init() {
   install_file "$src/.agents/lib/note-queue.sh" "$root/.agents/lib/note-queue.sh"
   install_file "$src/.agents/AGENTS-SECTION.md" "$root/.agents/AGENTS-SECTION.md"
   install_file "$src/scripts/teamflow" "$root/scripts/teamflow"
+  install_file "$src/scripts/teamflow_workers.py" "$root/scripts/teamflow_workers.py"
   chmod +x "$root/scripts/teamflow" "$root/.agents/lib/"*.sh
   [ -f "$root/scripts/teamflow.new" ] && chmod +x "$root/scripts/teamflow.new"
 
   if [ ! -e "$root/teamflow.conf" ]; then
     cp "$src/teamflow.conf" "$root/teamflow.conf"
-    say "wrote teamflow.conf (user-owned: edit models/panes here; init never overwrites it)"
+    say "wrote teamflow.conf (user-owned: edit worker types and instances here; init never overwrites it)"
   else
     say "teamflow.conf already present — left untouched"
-    if ! grep -q '^\[pane\.notetaker\]' "$root/teamflow.conf"; then
-      say "add [pane.notetaker] from $src/teamflow.conf to enable a final Notetaker pane"
+    if ! grep -q '^\[pane\.notetaker\]\|^\[worker\.notetaker\]' "$root/teamflow.conf"; then
+      say "add a Notetaker section from $src/teamflow.conf to enable the note queue"
     fi
   fi
 
@@ -627,7 +611,7 @@ cmd_up() { # $1 attach (1|0)  $2 --config value ('' = default config)  $3 worker
   note_tsv="$(printf '%s\n' "$tsv" | awk -F "$TSV_SEP" '$1 == "notetaker"')"
   if [ -n "$note_tsv" ]; then
     [ "$(printf '%s\n' "$tsv" | tail -1 | cut -d "$TSV_SEP" -f1)" = notetaker ] \
-      || die "[pane.notetaker] must be last in $conf"
+      || die "Notetaker must be last in $conf"
     [ -f "$root/.agents/lib/note-queue.sh" ] \
       || die "notetaker queue missing; run teamflow init to install .agents/lib/note-queue.sh"
   fi
@@ -635,11 +619,10 @@ cmd_up() { # $1 attach (1|0)  $2 --config value ('' = default config)  $3 worker
   [ "$worker_count" -gt 0 ] \
     || die "config must include at least one worker pane in $conf"
 
-  while IFS="$TSV_SEP" read -r role label cli model effort worktree; do
-    case "$role" in
-      delegator|researcher|reviewer|dev-senior|dev-mid|dev-junior|notetaker) ;;
-      *) die "unknown pane role '$role' in $conf" ;;
-    esac
+  while IFS="$TSV_SEP" read -r role label cli model effort worktree worker_type role_file; do
+    if [ -n "$role_file" ]; then
+      [ -f "$root/$role_file" ] || die "[$role] role file missing: $root/$role_file"
+    fi
     roles="$roles $role"
     [ -n "$cli" ] || die "[$role] cli is empty in $conf"
     case "$cli" in
@@ -676,7 +659,7 @@ EOF
 
   local role worktree wt_root branch
   wt_root="$root/.ai-team-worktrees"
-  while IFS="$TSV_SEP" read -r role label cli model effort worktree; do
+  while IFS="$TSV_SEP" read -r role label cli model effort worktree worker_type role_file; do
     [ "$worktree" = "yes" ] || continue
     branch="ai-team/$role"
     if git -C "$wt_root/$role" rev-parse --git-dir >/dev/null 2>&1; then
@@ -699,15 +682,15 @@ EOF
   local lib_dir="$root/.agents/lib"
   [ -d "$lib_dir" ] || lib_dir="$TOOL_HOME/.agents/lib"
 
-  pane_cmd() { # role cli model effort cwd rolefile sid mode -> pane shell command
-    local prole="$1" pcli="$2" pmodel="$3" peffort="$4" pcwd="$5" pfile="$6" psid="$7" pmode="$8"
+  pane_cmd() { # role cli model effort cwd rolefile sid mode type -> pane shell command
+    local prole="$1" pcli="$2" pmodel="$3" peffort="$4" pcwd="$5" pfile="$6" psid="$7" pmode="$8" ptype="$9"
     local envs qfile qmailbox qlib sflag
     qfile="$(shell_quote "$pfile")"
     qmailbox="$(shell_quote "$mailbox")"
     qlib="$(shell_quote "$lib_dir")"
     # export (a shell builtin) rather than the env binary: the zai pane starts
     # with `.` (source), which env cannot execute.
-    envs="export AGENT_ROLE=$(shell_quote "$prole") AGENT_ID=$(shell_quote "$sess-$prole") \
+    envs="export AGENT_ROLE=$(shell_quote "$prole") AGENT_WORKER_TYPE=$(shell_quote "$ptype") AGENT_ID=$(shell_quote "$sess-$prole") \
 AGENT_ROLE_FILE=$qfile AGENT_MAILBOX=$qmailbox AGENT_LIB_DIR=$qlib;"
     local base="" bin
     sflag="--session-id"
@@ -767,38 +750,28 @@ $(shell_quote "You are the team $prole. Read $pfile and AGENTS.md in $pcwd. Run:
   say "building session $sess (panes will show role labels; CLIs boot in place)"
   local -a order_roles order_clis order_cmds order_cwds
   local line idx=0
-  while IFS="$TSV_SEP" read -r role label cli model effort worktree; do
+  while IFS="$TSV_SEP" read -r role label cli model effort worktree worker_type role_file; do
     order_roles[$idx]="$role"
     order_clis[$idx]="$cli"
     local cwd="$root"
     [ "$worktree" = "yes" ] && cwd="$wt_root/$role"
     order_cwds[$idx]="$cwd"
 
-    # conversation persistence: resume the stored id only when its transcript
-    # still exists; otherwise start fresh and store the new id (claude/zai)
-    # or discover codex's minted id after boot. Never --continue/--last:
-    # panes share cwd, so "most recent" could cross roles.
+    # Resume only this instance's recorded conversation. Panes may share a
+    # directory, so --continue and --last could select another worker.
     local sid mode status snap=""
     reg_follow_cli "$mailbox" "$role" "$cli"
     sid="$(reg_get "$mailbox" "$role" SESSION_ID)"
     case "$cli" in
       claude|zai)
-        if claude_session_exists "$sid"; then
-          mode=resume
-        else
-          mode=fresh
-          sid="$(new_uuid)"
-        fi
-        ;;
+        if claude_session_exists "$sid"; then mode=resume
+        else mode=fresh; sid="$(new_uuid)"; fi ;;
       codex)
-        if codex_session_exists "$sid"; then
-          mode=resume
+        if codex_session_exists "$sid"; then mode=resume
         else
-          mode=fresh
-          sid=""
+          mode=fresh; sid=""
           snap="$(wc -l < "${CODEX_HOME:-$HOME/.codex}/session_index.jsonl" 2>/dev/null | tr -d ' ')"
-        fi
-        ;;
+        fi ;;
     esac
     status=live
     [ "$mode" = fresh ] && status=pending
@@ -807,113 +780,92 @@ $(shell_quote "You are the team $prole. Read $pfile and AGENTS.md in $pcwd. Run:
     [ "$mode" = fresh ] && reg+=(STARTED_AT="$(now_utc)" SNAPSHOT="$snap")
     reg_write "$mailbox" "$role" "${reg[@]}"
 
-    order_cmds[$idx]="$(pane_cmd "$role" "$cli" "$model" "$effort" "$cwd" "$root/.agents/roles/$role.md" "$sid" "$mode")"
-    [ -f "$root/.agents/roles/$role.md" ] || order_cmds[$idx]="$(pane_cmd "$role" "$cli" "$model" "$effort" "$cwd" "$TOOL_HOME/.agents/roles/$role.md" "$sid" "$mode")"
+    local resolved_role_file="$root/.agents/roles/$role.md"
+    [ -n "$role_file" ] && resolved_role_file="$root/$role_file"
+    if [ -z "$role_file" ] && [ ! -f "$resolved_role_file" ]; then
+      resolved_role_file="$TOOL_HOME/.agents/roles/$role.md"
+    fi
+    order_cmds[$idx]="$(pane_cmd "$role" "$cli" "$model" "$effort" "$cwd" "$resolved_role_file" "$sid" "$mode" "$worker_type")"
     idx=$((idx + 1))
   done <<EOF
 $tsv
 EOF
 
-  pane_ids_of() { tmux list-panes -t "=$sess" -F '#{pane_id}' 2>/dev/null | sort; }
-  diff_new_pane() { # prints the pane id added since $1 (sorted list)
-    comm -13 <(printf '%s\n' "$1") <(pane_ids_of) | head -1
+  boot_fail() {
+    tmux kill-session -t "=$sess" 2>/dev/null
+    rm -f "$mailbox/active"
+    die "$*"
   }
-
-  # Full mode keeps the Delegator on the left. Configured worker panes stack
-  # in order in the right column. Workers mode uses the whole window. Each
-  # split leaves one share for the current pane and the remaining shares for
-  # panes still to come. Exact heights are adjusted below.
-  local before pid
+  local pane_total=${#order_cmds[@]}
   tmux new-session -d -s "$sess" -n team -c "${order_cwds[0]}" "${order_cmds[0]}"
-  tmux has-session -t "=$sess" 2>/dev/null \
-    || die "pane boot failed: '${order_roles[0]}' exited immediately (session rolled back). Run its pane command by hand to see why — common causes: invalid model id, CLI auth/config error."
+  tmux has-session -t "=$sess" 2>/dev/null || \
+    die "pane boot failed: '${order_roles[0]}' exited immediately (session rolled back)"
   team_write "$mailbox" "SESSION=$sess" "CREATED=$(session_created "$sess")" \
     "CONFIG=$conf" "CONFIG_HASH=$(conf_hash "$conf")" "ROOT=$root" "STARTED_AT=$(now_utc)" "MODE=$team_mode"
-  local p0
-  p0="$(pane_ids_of)"
-  tmux rename-window -t "=$sess" "team"
-  tmux set-window-option -t "=$sess" remain-on-exit on >/dev/null
-  # Border status must be on BEFORE any splits/resizes: enabling it later
-  # shrinks the pane grid by a line and tmux re-tiles proportionally,
-  # wiping exact pane heights set by the resize step below.
-  tmux set-window-option -t "=$sess" pane-border-status top >/dev/null
-
-  # Drop routing vars from OUR session environment only, so anyone inspecting
-  # `tmux show-environment -t` sees a clean session. The server-global
-  # environment is left exactly as found: unrelated sessions may depend on it.
-  # Panes still merge the global env back in; the in-pane unset in the pane
-  # command removes it before claude runs, so claude never sees routing vars.
+  # Clear routing values from this session. Each pane also unsets them
+  # before starting a native Claude CLI, while z.ai panes source zai_env.
   local v
   for v in $CLAUDE_ROUTING_VARS; do
     tmux set-environment -u -t "=$sess" "$v" 2>/dev/null
   done
+  local p0
+  p0="$(tmux list-panes -t "=$sess:team" -F '#{pane_id}' | head -1)"
+  [ -n "$note_tsv" ] && rm -f "$mailbox/acks/notetaker.json"
 
-  # Pane ids follow config order. col holds the worker column for sizing.
-  local -a role_pids col
-  local carrier new_pid pane_index remaining percent pane_total
-  pane_total=${#order_cmds[@]}
-  if [ -n "$note_tsv" ]; then
-    rm -f "$mailbox/acks/notetaker.json"
-  fi
-  if [ "$team_mode" = workers ]; then
-    col=("$p0")
-    carrier="$p0"
-    for ((pane_index = 1; pane_index < pane_total; pane_index++)); do
-      remaining=$((pane_total - pane_index))
-      percent=$((remaining * 100 / (remaining + 1)))
-      before="$(pane_ids_of)"
-      tmux split-window -d -v -p "$percent" -t "$carrier" \
-        -c "${order_cwds[$pane_index]}" "${order_cmds[$pane_index]}" \
-        || die "could not create pane for ${order_roles[$pane_index]}"
-      new_pid="$(diff_new_pane "$before")"
-      col+=("$new_pid")
-      carrier="$new_pid"
+  # Tile panes within each window. Limit window occupancy so every worker
+  # remains readable on the current terminal, then use more windows as needed.
+  local ww wh columns rows capacity next_index=0 window_number=1
+  ww="$(tmux display-message -p -t "$p0" '#{window_width}')"
+  wh="$(tmux display-message -p -t "$p0" '#{window_height}')"
+  columns=$((ww / 20))
+  rows=$(((wh - 1) / 6))
+  [ "$columns" -ge 1 ] || columns=1
+  [ "$rows" -ge 1 ] || rows=1
+  capacity=$((columns * rows))
+  [ "$capacity" -le 12 ] || capacity=12
+  local -a role_pids
+  local win_target win_first win_end before new_pid largest size_width size_height direction
+  while [ "$next_index" -lt "$pane_total" ]; do
+    if [ "$window_number" = 1 ]; then
+      win_target="=$sess:team"
+      win_first="$p0"
+    else
+      win_target="=$sess:team-$window_number"
+      tmux new-window -d -t "=$sess" -n "team-$window_number" \
+        -c "${order_cwds[$next_index]}" "${order_cmds[$next_index]}" \
+        || boot_fail "could not create window for ${order_roles[$next_index]}"
+      win_first="$(tmux list-panes -t "$win_target" -F '#{pane_id}' | head -1)"
+    fi
+    tmux set-window-option -t "$win_target" remain-on-exit on >/dev/null
+    tmux set-window-option -t "$win_target" pane-border-status top >/dev/null
+    win_end=$((next_index + capacity))
+    [ "$win_end" -le "$pane_total" ] || win_end="$pane_total"
+    role_pids+=("$win_first")
+    next_index=$((next_index + 1))
+    while [ "$next_index" -lt "$win_end" ]; do
+      before="$(tmux list-panes -t "$win_target" -F '#{pane_id}' | sort)"
+      # Split the largest current pane, then let tmux rebalance the grid.
+      read -r size_width size_height largest <<< "$(tmux list-panes -t "$win_target" \
+        -F '#{pane_width} #{pane_height} #{pane_id}' \
+        | awk '$1 * $2 > area {area = $1 * $2; pane = $0} END {print pane}')"
+      direction=-v
+      [ "$size_width" -gt $((size_height * 2)) ] && direction=-h
+      tmux split-window -d "$direction" -t "$largest" \
+        -c "${order_cwds[$next_index]}" "${order_cmds[$next_index]}" \
+        || boot_fail "could not create pane for ${order_roles[$next_index]}"
+      new_pid="$(comm -13 <(printf '%s\n' "$before") <(tmux list-panes -t "$win_target" -F '#{pane_id}' | sort) | head -1)"
+      role_pids+=("$new_pid")
+      tmux select-layout -t "$win_target" tiled >/dev/null \
+        || boot_fail "could not tile window $window_number"
+      next_index=$((next_index + 1))
     done
-    role_pids=("${col[@]}")
-  else
-    before="$(pane_ids_of)"
-    tmux split-window -d -h -p 50 -t "$p0" -c "${order_cwds[1]}" "${order_cmds[1]}"
-    carrier="$(diff_new_pane "$before")"
-    col=("$carrier")
-    for ((pane_index = 2; pane_index < pane_total; pane_index++)); do
-      remaining=$((pane_total - pane_index))
-      percent=$((remaining * 100 / (remaining + 1)))
-      before="$(pane_ids_of)"
-      tmux split-window -d -v -p "$percent" -t "$carrier" \
-        -c "${order_cwds[$pane_index]}" "${order_cmds[$pane_index]}" \
-        || die "could not create pane for ${order_roles[$pane_index]}"
-      new_pid="$(diff_new_pane "$before")"
-      col+=("$new_pid")
-      carrier="$new_pid"
-    done
-    role_pids=("$p0" "${col[@]}")
-  fi
-
-  # Exact equal sizing, grammar-free: resize the column panes to a
-  # computed content height; tmux redistributes within the column only.
-  # The pane grid is wh-1 (the border-status line); the column panes
-  # share the remaining content lines, with any remainder spread one at a time
-  # from the top. In the full team the delegator keeps the full grid
-  # height. Below a sane minimum, leave the proportional splits in place.
-  local ww wh grid rbase rrem n j
-  ww=$(tmux display-message -p -t "$p0" '#{window_width}')
-  wh=$(tmux display-message -p -t "$p0" '#{window_height}')
-  grid=$((wh - 1))
-  n=${#col[@]}
-  if [ "${ww:-0}" -ge 20 ] && [ "$grid" -ge $((n * 2)) ]; then
-    rbase=$(( (grid - n + 1) / n ))
-    rrem=$(( (grid - n + 1) - rbase * n ))
-    for ((j = 0; j < n - 1; j++)); do
-      tmux resize-pane -t "${col[$j]}" -y $(( rbase + (rrem > j ? 1 : 0) )) 2>/dev/null
-    done
-  fi
+    window_number=$((window_number + 1))
+  done
   local _pid _i=0
   for _pid in "${role_pids[@]}"; do
     case "$_pid" in
       %*) ;;
-      *) tmux kill-session -t "=$sess" 2>/dev/null
-         rm -f "$mailbox/active"
-         die "pane boot failed: '${order_roles[$_i]}' exited immediately or its pane id could not be captured (session rolled back). Run the pane command by hand to see why." ;;
+      *) boot_fail "pane boot failed: '${order_roles[$_i]}' exited immediately or its pane id could not be captured" ;;
     esac
     _i=$((_i + 1))
   done
@@ -924,7 +876,7 @@ EOF
   # match appears (slow or old codex, dead pane), the entry stays pending and
   # `--verify` backfills it with the same cwd filter.
   local drole dlabel dcli dmodel deffort dworktree did dtries
-  while IFS="$TSV_SEP" read -r drole dlabel dcli dmodel deffort dworktree; do
+  while IFS="$TSV_SEP" read -r drole dlabel dcli dmodel deffort dworktree dtype dfile; do
     if [ "$dcli" = codex ] && [ "$(reg_get "$mailbox" "$drole" STATUS)" = pending ] \
        && [ -z "$(reg_get "$mailbox" "$drole" SESSION_ID)" ]; then
       did=""
@@ -946,7 +898,7 @@ EOF
   : > "$mailbox/panes.tsv"
   local i labels
   i=0
-  while IFS="$TSV_SEP" read -r role label cli model effort worktree; do
+  while IFS="$TSV_SEP" read -r role label cli model effort worktree worker_type role_file; do
     tmux select-pane -t "${pids[$i]}" -T "$label"
     printf '%s\t%s\n' "$role" "${pids[$i]}" >> "$mailbox/panes.tsv"
     i=$((i + 1))
@@ -1000,7 +952,7 @@ cmd_verify() { # $1 --config value ('' = the running team, else the default conf
   echo "session: $sess ($(tmux has-session -t "=$sess" 2>/dev/null && echo up || echo DOWN))"
   echo "config:  ${T_CONF:-none}"
   [ "$ACTIVE_MODE" = workers ] && echo "mode:    workers only (the Delegator runs outside tmux)"
-  while IFS="$TSV_SEP" read -r role label cli model effort worktree; do
+  while IFS="$TSV_SEP" read -r role label cli model effort worktree worker_type role_file; do
     local pid ack="no" alive="gone" ack_time="" bid=""
     pid=$(awk -F '\t' -v r="$role" '$1 == r {print $2; exit}' "$mailbox/panes.tsv" 2>/dev/null)
     [ -n "$pid" ] && tmux list-panes -a -F '#{pane_id}' 2>/dev/null | grep -qx "$pid" && alive="pane $pid"
@@ -1045,7 +997,7 @@ cmd_check_models() { # $1 --config value ('' = default config)
   fi
   echo "probing models with one tiny request each (costs a little quota; claude panes: clean env, zai panes: env file)"
   local -a probe_env
-  while IFS="$TSV_SEP" read -r role label cli model effort worktree; do
+  while IFS="$TSV_SEP" read -r role label cli model effort worktree worker_type role_file; do
     probe_env=(env -i HOME="$HOME" PATH="$PATH")
     # STUB_LOG is a test-suite hook (stub CLIs log there); unset in real use.
     [ -n "${STUB_LOG:-}" ] && probe_env+=(STUB_LOG="$STUB_LOG")
@@ -1099,11 +1051,22 @@ cmd_kill() { # $1 --config value ('' = the running team, else the default config
   say "worktrees and branches are left in place (inspect .ai-team-worktrees/)"
 }
 
+cmd_workers() { # $1 config argument $2 action $3 value $4 dry-run
+  local root conf
+  root="$(team_root)" || exit $?
+  conf="$(resolve_conf "$root" "$1")" || exit $?
+  [ -n "$2" ] || die "usage: teamflow workers list|add <type>|remove <id>|migrate [--dry-run]"
+  local -a args=("$2" "$conf" "$root")
+  [ -z "$3" ] || args+=("$3")
+  [ "$4" = 0 ] || args+=(--dry-run)
+  python3 "$TOOL_HOME/scripts/teamflow_workers.py" "${args[@]}"
+}
+
 # ---------- main -----------------------------------------------------------------
 
 # Mode and flags may come in any order. Everything is parsed and checked
 # before any mode runs, so a mistyped command line has no side effects.
-MODE="" NO_ATTACH=0 CONFIG="" CONFIG_GIVEN=0 WORKERS=0
+MODE="" NO_ATTACH=0 CONFIG="" CONFIG_GIVEN=0 WORKERS=0 WORKER_ACTION="" WORKER_VALUE="" DRY_RUN=0
 
 pick_mode() {
   [ -z "$MODE" ] || [ "$MODE" = "$1" ] || die "choose one mode: '$MODE' and '$1' cannot be combined"
@@ -1112,7 +1075,11 @@ pick_mode() {
 
 while [ $# -gt 0 ]; do
   case "$1" in
-    init|start|up|--verify|--check-models|--kill) pick_mode "$1" ;;
+    init|start|up|--verify|--check-models|--kill|workers) pick_mode "$1" ;;
+    list|add|remove|migrate)
+      [ "$MODE" = workers ] && [ -z "$WORKER_ACTION" ] || die "unknown argument: $1"
+      WORKER_ACTION="$1" ;;
+    --dry-run) DRY_RUN=1 ;;
     --no-attach) NO_ATTACH=1 ;;
     --workers) WORKERS=1 ;;
     --config|--config=*)
@@ -1130,7 +1097,12 @@ while [ $# -gt 0 ]; do
       CONFIG_GIVEN=1
       ;;
     -h|--help) usage; exit 0 ;;
-    *) usage; die "unknown argument: $1" ;;
+    *)
+      if [ "$MODE" = workers ] && [ "$WORKER_ACTION" = add -o "$WORKER_ACTION" = remove ] && [ -z "$WORKER_VALUE" ]; then
+        WORKER_VALUE="$1"
+      else
+        usage; die "unknown argument: $1"
+      fi ;;
   esac
   shift
 done
@@ -1142,6 +1114,8 @@ MODE="${MODE:-up}"
   || die "--workers applies to start or up only, not to $MODE (--verify and --kill follow the running team)"
 [ "$CONFIG_GIVEN" = 0 ] || [ "$MODE" != init ] \
   || die "--config does not apply to init, which reads no config. Pass it to start, up, --verify, --check-models, or --kill"
+[ "$DRY_RUN" = 0 ] || { [ "$MODE" = workers ] && [ "$WORKER_ACTION" = migrate ]; } \
+  || die "--dry-run applies only to workers migrate"
 
 case "$MODE" in
   init)           cmd_init ;;
@@ -1150,4 +1124,5 @@ case "$MODE" in
   --verify)       cmd_verify "$CONFIG" ;;
   --check-models) cmd_check_models "$CONFIG" ;;
   --kill)         cmd_kill "$CONFIG" ;;
+  workers)        cmd_workers "$CONFIG" "$WORKER_ACTION" "$WORKER_VALUE" "$DRY_RUN" ;;
 esac

@@ -1,7 +1,8 @@
 # teamflow - tmux workspace
 
 In workers mode, the Delegator plans with the user in an external terminal.
-Configured workers and the optional Notetaker share one tmux window.
+Configured workers and the optional Notetaker run in tmux windows. Larger
+rosters spill into additional windows.
 The launcher also supports a full-team mode with the Delegator on the left
 and configured roles on the right. They share a task mailbox, and developers have
 dedicated git worktrees.
@@ -17,7 +18,7 @@ The `teamflow` shell alias points to this repo's `scripts/teamflow`. Run
 missing, it runs `init` first. You can run `init` separately to prepare the
 project without launching workers. From this tool home, `init` creates a Git
 repository when needed. It copies
-`scripts/teamflow` and `.agents/` (roles, lib, doc templates,
+`scripts/teamflow`, `scripts/teamflow_workers.py`, and `.agents/` (roles, lib, doc templates,
 AGENTS-SECTION.md), writes `teamflow.conf` only when absent, and updates
 only the marked AGENTS.md section. If the repository has no commit, `init`
 makes a first commit containing only the teamflow scaffold. Existing staged
@@ -26,29 +27,51 @@ with a commit are never committed by `init`. The first commit gives the
 launcher a HEAD for developer worktrees. `start` launches workers mode
 without attaching to the tmux session.
 
-For an existing project, run `init` again to receive the new role and queue
-files. Init keeps your `teamflow.conf`, so add the `[pane.notetaker]` section
-from this repo's config to enable a final Notetaker pane there.
+For an existing project, run `init` again to receive the new launcher, role
+files, and skill. Init keeps your `teamflow.conf`. Legacy configs still launch.
+Use `teamflow workers migrate --dry-run` to preview conversion to worker
+instances, then migrate when the team is stopped and old task records are clear.
 
 ## Pane map
 
 In workers mode, the **Delegator and Planner** runs outside tmux. The
-default config stacks these six panes from top to bottom:
+default config stacks these four panes from top to bottom:
 
 1. **Researcher** - z.ai GLM (`glm-5.3`, max)
 2. **Reviewer** - Claude (`fable`, max)
-3. **Dev Senior** - Claude (`fable`, max)
-4. **Dev Mid** - Claude (`opus`, max)
-5. **Dev Junior** - z.ai GLM (`glm-5.3`, max)
-6. **Notetaker** - Claude (`opus`, xhigh), maintaining `docs/notes/`
+3. **Developer L** - Claude (`fable`, max)
+4. **Notetaker** - Claude (`opus`, xhigh), maintaining `docs/notes/`
 
-In full-team mode, the Delegator gets a full-height left pane. Configured
-worker roles stack in the right column. The two columns have equal width.
+Developer M and S profiles are defined but have no instances in the default
+config. Add them with `teamflow workers add developer-m` or
+`teamflow workers add developer-s`. All three developer profiles use the
+same `.agents/roles/developer.md` instructions. The profile selects the CLI,
+model, and effort. The Delegator defines task scope in each assignment.
 
-Models, CLIs, effort levels, and pane count come from `teamflow.conf`
-(one file, one `[pane.<role>]` section per pane, in layout order). The
-launcher never silently substitutes a model — if something is missing it
+In full-team mode, the Delegator and workers share a tiled tmux layout.
+Workers mode tiles only worker panes. Larger rosters use more windows so
+the panes remain readable.
+
+Models, CLIs, and effort levels come from `[type.<name>]` sections in
+`teamflow.conf`. Each `[worker.<instance-id>]` refers to a type. Worker
+section order sets pane order. The Notetaker has the singleton ID
+`notetaker` and must be last. The launcher never silently substitutes a model — if something is missing it
 says exactly what and where to fix it.
+
+## Managing workers
+
+```
+teamflow workers list
+teamflow workers add developer-m
+teamflow workers add researcher
+teamflow workers remove developer-m-1
+```
+
+Instances have stable numbered IDs for tasks, panes, conversations, worktrees,
+and branches. Removal preserves history and worktrees. It refuses an unfinished
+assigned task and cannot remove the last regular worker. Config changes take
+effect after `teamflow --kill` and `teamflow start`. These commands do not
+restart the team. Use `--config <file>` to manage a variant.
 
 ## Choosing a config
 
@@ -65,7 +88,8 @@ another file with `--config`:
 
 Mode and flags go in any order, and `--config=<file>` works too. `init`
 takes no config. A variant has a `[workspace]` section and at least one
-worker pane. `[pane.notetaker]` is optional and must be last. Without `--config`
+worker instance. `[worker.notetaker]` is optional and must be last. Legacy
+`[pane.<instance-id>]` configs remain supported. Without `--config`
 everything behaves as before.
 
 **Paths.** An absolute path is used as given, and a leading `~/` means
@@ -131,9 +155,9 @@ message.
 Conversations follow the CLI. The Claude Delegator starts its own
 conversation and never resumes the Codex id. The Codex entry is parked
 as `.git/ai-team/sessions/delegator.codex`, and the next launch with
-`teamflow.conf` resumes it. Roles whose `cli` is the same in both configs
-keep their conversations across the switch. The role table in AGENTS.md
-lists the default CLIs. Roles and routing are the same in every config.
+`teamflow.conf` resumes it. Instances with the same ID and CLI in both
+configs keep their conversations across the switch. Each variant may choose
+its own roster and type settings.
 
 ## Workers mode (external Delegator)
 
@@ -145,8 +169,9 @@ routed to z.ai, and let the launcher start the configured workers:
 tmux attach -t <session>                     # watch the workers (optional)
 ```
 
-Configured workers and an optional Notetaker stack top to bottom in one full-width
-column, with their usual models, worktrees, and conversation resume. `[pane.delegator]` is
+Configured workers and an optional Notetaker use a tiled layout across as
+many windows as needed, with their models, worktrees, and conversation
+resume. `[pane.delegator]` is
 ignored and may be left out. No Delegator pane or CLI starts, and nothing
 is typed into your session: results arrive in the mailbox. `--config`,
 `--verify`, and `--kill` work as for the full team. One team runs per
@@ -157,17 +182,17 @@ Your session has no `AGENT_*` variables. `.agents/lib/delegator.sh` sets
 them from the repo it belongs to, then runs `task.sh` or `pane.sh`:
 
 ```
-bash .agents/lib/delegator.sh task new dev-mid 'Title' <<'EOF'
+bash .agents/lib/delegator.sh task new developer-l-1 'Title' <<'EOF'
 ...assignment...
 EOF
-bash .agents/lib/delegator.sh pane send-to dev-mid "Task T-0001: Title. Details: task.sh read T-0001"
+bash .agents/lib/delegator.sh pane send-to developer-l-1 "Task T-0001: Title. Details: task.sh read T-0001"
 bash .agents/lib/delegator.sh task inbox delegator
 bash .agents/lib/delegator.sh task release T-0001 abc1234
 cat .git/ai-team/note-queue/completed/T-0001.md
 ```
 
 It refuses to run inside a worker pane. `init` copies the `teamflow`,
-`teamflow-resume`, and `teamflow-kill` skills from the tool home into the project's `.agents/skills/`
+`teamflow-resume`, `teamflow-kill`, and `teamflow-workers` skills from the tool home into the project's `.agents/skills/`
 for Codex and `.claude/skills/` for Claude Code. Re-running `init` preserves
 local skill edits and stages changed shipped files as `.new` for review.
 
@@ -198,9 +223,9 @@ local skill edits and stages changed shipped files as `.new` for review.
   Delegator pane (`send-to delegator` is rejected); it discovers
   completions via `task.sh inbox delegator`.
 - **Check results yourself**: `bash .agents/lib/task.sh list`,
-  `... read T-0003`, `... inbox <role>`
-- **Send text to a pane**: `bash .agents/lib/pane.sh send-to dev-mid "..."`
-  (`... tail dev-mid` shows what's on screen — a CLI may be busy; delivery
+  `... read T-0003`, `... inbox <instance-id>`
+- **Send text to a pane**: `bash .agents/lib/pane.sh send-to developer-l-1 "..."`
+  (`... tail developer-l-1` shows what's on screen — a CLI may be busy; delivery
   ≠ completion, the mailbox is the source of truth)
 - **Verify panes**: `./scripts/teamflow --verify` (liveness + role acks)
 - **Stop**: `./scripts/teamflow --kill` (session only; worktrees and branches
@@ -213,8 +238,8 @@ local skill edits and stages changed shipped files as `.new` for review.
 
 ## Integrating approved work
 
-Concurrent work is isolated by construction: each developer role commits to
-its own branch `ai-team/<role>` in its own worktree, one commit per
+Concurrent work is isolated by construction: each developer instance commits to
+its own branch `ai-team/<instance-id>` in its own worktree, one commit per
 completed task, and task scopes are assigned not to overlap. The role
 finishes and reports its commit. The Delegator inspects the full diff and
 integrates a small, obvious change after a relevant check. Broader or
@@ -226,19 +251,19 @@ has your approval; nothing is pushed without your explicit go-ahead.
 # Inspect one role's work (read-only, no checkout needed). The Delegator
 # or Reviewer uses these commands. An empty log means the role has
 # nothing to integrate: skip it.
-git -C .ai-team-worktrees/dev-mid log --oneline main..ai-team/dev-mid
-git -C .ai-team-worktrees/dev-mid diff main...ai-team/dev-mid
-git -C .ai-team-worktrees/dev-mid diff --name-only main...ai-team/dev-mid
+git -C .ai-team-worktrees/developer-l-1 log --oneline main..ai-team/developer-l-1
+git -C .ai-team-worktrees/developer-l-1 diff main...ai-team/developer-l-1
+git -C .ai-team-worktrees/developer-l-1 diff --name-only main...ai-team/developer-l-1
 
 # Integrate exactly one role after Reviewer approval or a documented
 # Delegator self-review of a small, obvious change.
 # The main checkout must be clean before starting.
 git status --short                 # in the main checkout: no output = clean
 git checkout main
-git cherry-pick main..ai-team/dev-mid
+git cherry-pick main..ai-team/developer-l-1
 # or squash into one commit. Both paths stop on conflict instead of
 # overwriting:
-# git -C .ai-team-worktrees/dev-mid diff main...ai-team/dev-mid | git apply --3way
+# git -C .ai-team-worktrees/developer-l-1 diff main...ai-team/developer-l-1 | git apply --3way
 # git commit -m "type(scope): subject for the whole task"
 
 # Run the project's relevant checks before integrating the next role.
@@ -246,8 +271,8 @@ git cherry-pick main..ai-team/dev-mid
 # Optional: refresh the other roles' worktrees so later work rebases onto
 # the updated main and future patches apply cleanly. Rebase a role's
 # worktree only when it is idle (its CLI not mid-task) and clean
-# (git -C .ai-team-worktrees/<role> status shows nothing).
-git -C .ai-team-worktrees/dev-senior rebase main
+# (git -C .ai-team-worktrees/<instance-id> status shows nothing).
+git -C .ai-team-worktrees/developer-l-1 rebase main
 ```
 
 Because integration goes through `cherry-pick` or `git apply --3way`, a
@@ -259,20 +284,20 @@ reviewed work enters main; nothing is pushed without your approval.
 
 - `.agents/roles/*.md` — role instructions (static; injected at launch)
 - `.git/ai-team/` — the mailbox: `tasks/<id>/{task.md,result.md,status}`,
-  `acks/`, `panes.tsv`, `sends.log`, `sessions/<role>` (per-role conversation
+  `acks/`, `panes.tsv`, `sends.log`, `sessions/<instance-id>` (per-role conversation
   registry; runtime state; excluded from git; instantly visible to all
   worktrees because it sits in the git common dir)
 - `.git/ai-team/active` - the running session and the config that
-  started it. `.git/ai-team/sessions/<role>.<cli>` - a conversation
+  started it. `.git/ai-team/sessions/<instance-id>.<cli>` - a conversation
   parked while that role runs another CLI.
-- `.ai-team-worktrees/<role>` + branches `ai-team/<role>` — developer panes
+- `.ai-team-worktrees/<instance-id>` + branches `ai-team/<instance-id>` — developer panes
   (created only if absent, never reset)
 - Repo-root `AGENTS.md` — shared coordination rules (marked section,
   `teamflow init` owns only the markers)
 - `.agents/doc-templates/` - note templates and the project notes workflow
 - `.agents/lib/delegator.sh` - runs `task.sh` and `pane.sh` as the
   Delegator from outside tmux (workers mode)
-- `skills/teamflow/`, `skills/teamflow-resume/`, and `skills/teamflow-kill/` (tool home) - source skills
+- `skills/teamflow/`, `skills/teamflow-resume/`, `skills/teamflow-kill/`, and `skills/teamflow-workers/` (tool home) - source skills
 - `.agents/skills/` and `.claude/skills/` (initialized projects) - repo-scoped copies of those skills
 
 ## Project notes
@@ -294,7 +319,7 @@ folder without configuring Obsidian.
 
 Each pane's CLI conversation survives `--kill` and relaunch. On a fresh `up`
 (read: the tmux session is gone) the launcher consults the per-role registry
-`.git/ai-team/sessions/<role>` and never touches a live session (reattach
+`.git/ai-team/sessions/<instance-id>` and never touches a live session (reattach
 still wins):
 
 - **Claude / z.ai panes** boot with an explicit `--session-id` (a UUID the
@@ -317,7 +342,7 @@ still wins):
 - **A changed `cli`** (another config, or an edit) never resumes the old
   id: an id belongs to the CLI that minted it, and `claude` and `zai`
   count as different CLIs. The launcher parks the old entry as
-  `sessions/<role>.<cli>` and starts a fresh conversation, or restores
+  `sessions/<instance-id>.<cli>` and starts a fresh conversation, or restores
   the one parked for the configured CLI. Switching back resumes where
   that CLI left off.
 
@@ -336,7 +361,7 @@ still wins):
   `--append-system-prompt-file` (Claude/z.ai) and act when first addressed.
   The note queue uses no model calls while idle or while a note is in progress.
 - **Busy CLIs**: `send-to` types into a pane; if that CLI is mid-turn the
-  text queues as input. Check `pane.sh tail <role>`, and rely on task
+  text queues as input. Check `pane.sh tail <instance-id>`, and rely on task
   records for outcomes.
 - **Conversation persistence**: claude transcripts auto-expire per your
   claude retention settings (default 30 days) — expect a conversation

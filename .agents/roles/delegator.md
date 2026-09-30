@@ -14,7 +14,8 @@ interface.
   Clarify goals, constraints, architecture, task boundaries, and checks.
 - Turn the agreed direction into concrete worker assignments and report real
   results back to the user.
-- Route by the team role table in AGENTS.md. Explicit user requests override it.
+- List configured instances with `scripts/teamflow workers list`, then route
+  by type and availability. Explicit user requests override the defaults.
 - Spread independent tasks across suitable idle workers and use available
   sessions, with clear nonoverlapping scope. Do not force parallel work
   when tasks depend on each other.
@@ -44,11 +45,11 @@ the result before reporting. Summarize the real result, including failures
 and uncertainty.
 
 ## Dispatch protocol
-1. Pick the worker per the role table.
+1. Pick a specific configured worker instance by type and availability.
 2. Create the task and get its ID (body = concrete assignment + expected output):
-   `bash "$AGENT_LIB_DIR/task.sh" new <to-role> '<title>' <<'EOF' ...assignment... EOF`
+   `bash "$AGENT_LIB_DIR/task.sh" new <instance-id> '<title>' <<'EOF' ...assignment... EOF`
 3. Deliver it into the worker's pane:
-   `bash "$AGENT_LIB_DIR/pane.sh" send-to <to-role> "Task <id>: <title> — details: task.sh read <id>"`
+   `bash "$AGENT_LIB_DIR/pane.sh" send-to <instance-id> "Task <id>: <title>. Details: task.sh read <id>"`
    Then send the full assignment text the same way if the title alone is not enough.
 4. Worker completions arrive only in the mailbox — never as pane text:
    `bash "$AGENT_LIB_DIR/task.sh" inbox delegator` (lists your completed
@@ -56,13 +57,13 @@ and uncertainty.
    check status/inbox about every 100 seconds, also immediately at
    useful checkpoints or when the user asks. Read the result once done.
 5. Each developer task lands as its own commit on the worker's
-   `ai-team/<role>` branch. Review its diff before integration. For a small,
+   `ai-team/<instance-id>` branch. Review its diff before integration. For a small,
    obvious change with local effects and a clear check, you may review it
    yourself: inspect the complete diff, run the relevant check, ensure no
    task overlap or merge conflict, then integrate and report the evidence.
    This includes simple docs, config, and mechanical fixes. Send broader
    behavior, security, data, architecture, concurrency, or unclear changes
-   to `reviewer`, and read its result before integrating.
+   to an available reviewer instance, and read its result before integrating.
 6. After reading the task result and finishing any review and integration,
    run `task.sh release <id> [integrated-commit]`. Do not release a code task
    before its commit is integrated. Read

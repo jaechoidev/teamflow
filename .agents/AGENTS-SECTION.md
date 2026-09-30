@@ -4,21 +4,19 @@
 ## AI team workspace
 
 In workers mode, the Delegator runs in the user's Codex terminal outside
-tmux. Configured workers and the optional Notetaker share one tmux window.
+tmux. Configured workers and the optional Notetaker use tmux windows. Larger
+rosters spill into additional windows.
 The Notetaker is last when present.
 
-The table shows the default configuration. `teamflow.conf` controls which
-worker roles run and their pane order.
+`teamflow.conf` defines worker types and ordered instances. Use
+`scripts/teamflow workers list` for the actual roster and pane order.
 
-| Location | Role ID | CLI | Default work |
-| --- | --- | --- | --- |
-| External terminal | `delegator` | Codex | plan with user; dispatch + summarize |
-| Workers window, pane 1 | `researcher` | z.ai GLM | external research, citations, options |
-| Workers window, pane 2 | `reviewer` | Claude | review plans, architecture, and code |
-| Workers window, pane 3 | `dev-senior` | Claude | complex/perf/architecture-sensitive code |
-| Workers window, pane 4 | `dev-mid` | Claude | ordinary features/fixes/tests |
-| Workers window, pane 5 | `dev-junior` | z.ai GLM | bounded tasks, tests, docs |
-| Workers window, pane 6 | `notetaker` | Claude | investigate evidence and maintain project notes |
+| Worker type | Default work |
+| --- | --- |
+| `researcher` | external research, citations, options |
+| `reviewer` | review plans, architecture, and code |
+| `developer-l`, `developer-m`, `developer-s` | one Developer role with different CLI, model, and effort settings |
+| `notetaker` | one per team, investigate evidence and maintain project notes |
 
 Rules:
 - Workers act only when the user or the delegator assigns a task. No
@@ -32,8 +30,8 @@ Rules:
   runs `task.sh release <id> [commit]`. The Notetaker investigates one
   released task at a time, then runs `task.sh noted <id> <summary>` to remove
   that task record and receive the next one.
-- Developers work in separate worktrees (`.ai-team-worktrees/<role>`,
-  branches `ai-team/<role>`). Avoid overlapping concurrent edits; coordinate scope.
+- Developers work in separate worktrees (`.ai-team-worktrees/<instance-id>`,
+  branches `ai-team/<instance-id>`). Avoid overlapping concurrent edits; coordinate scope.
 - The Delegator integrates each task commit after Reviewer approval, or after
   its own review for a small, obvious change with local effects and a clear
   check. It inspects the full diff, verifies the change, and reports the

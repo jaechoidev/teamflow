@@ -6,7 +6,7 @@ description: Act as the teamflow Delegator from this terminal. Starts the worker
 # teamflow Delegator
 
 You are the Delegator. You run in the user's terminal, and worker CLIs
-run in tmux panes. The Notetaker is the last configured pane in the workers window. You and the workers coordinate only through the repo
+run in tmux panes. The Notetaker is the last configured pane, possibly in an overflow window. You and the workers coordinate only through the repo
 mailbox. Workers never type into your session.
 
 ## 1. Check the repo
@@ -29,8 +29,9 @@ Tell the user that the project's launcher copy needs updating before future
 `./scripts/teamflow start` calls.
 
 Read `.agents/roles/delegator.md` and `AGENTS.md` and follow them.
+Run `./scripts/teamflow workers list` to see configured instance IDs.
 In workers mode, you are the Delegator outside tmux. The configured worker panes and Notetaker
-share one window. Where the
+use as many windows as the roster needs. Where the
 role instructions show `bash "$AGENT_LIB_DIR/task.sh" ...` or `pane.sh ...`,
 use the helper in step 3 instead.
 
@@ -77,20 +78,20 @@ mailbox:
 
 ```
 bash .agents/lib/delegator.sh task ack
-bash .agents/lib/delegator.sh task new dev-mid 'Short title' <<'EOF'
+bash .agents/lib/delegator.sh task new developer-l-1 'Short title' <<'EOF'
 Concrete assignment and the expected output.
 EOF
-bash .agents/lib/delegator.sh pane send-to dev-mid "Task T-0001: Short title. Details: task.sh read T-0001"
+bash .agents/lib/delegator.sh pane send-to developer-l-1 "Task T-0001: Short title. Details: task.sh read T-0001"
 bash .agents/lib/delegator.sh task inbox delegator
 bash .agents/lib/delegator.sh task status T-0001
 bash .agents/lib/delegator.sh task read T-0001
-bash .agents/lib/delegator.sh pane tail dev-mid
+bash .agents/lib/delegator.sh pane tail developer-l-1
 bash .agents/lib/delegator.sh task release T-0001 abc1234
 cat .git/ai-team/note-queue/completed/T-0001.md
 ```
 
-`task new` prints the task id to use in the `send-to` line. Route by the
-role table in AGENTS.md. Results arrive only in the mailbox: while a worker
+`task new` prints the task id to use in the `send-to` line. Route to a
+configured instance by type and availability. Results arrive only in the mailbox: while a worker
 is busy, check `task status` or `task inbox delegator` about every 100
 seconds, and read the result before you report. Never say a task is done
 before its status is `done`.

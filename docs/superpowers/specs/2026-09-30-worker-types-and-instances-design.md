@@ -33,7 +33,7 @@ cli = claude
 model = opus
 effort = max
 worktree = yes
-role_file = .agents/roles/developer-m.md
+role_file = .agents/roles/developer.md
 next_id = 2
 
 [type.notetaker]
@@ -57,7 +57,7 @@ type = developer-m
 type = notetaker
 ```
 
-Type sections define settings and role instructions. Worker sections contain only a type reference. Their order determines pane order. A type may have zero instances. `[pane.delegator]` remains the optional full mode Delegator definition. `[worker.notetaker]` is an optional singleton placed last and must refer to `[type.notetaker]`. At least one regular worker is required. Numbered instance IDs are never recycled or renumbered by the management commands. The next number for each type is stored in its type section, so removal does not make an ID available again.
+Type sections define settings and point to role instructions. The developer L, M, and S profiles share `.agents/roles/developer.md`. Worker sections contain only a type reference. Their order determines pane order. A type may have zero instances. `[pane.delegator]` remains the optional full mode Delegator definition. `[worker.notetaker]` is an optional singleton placed last and must refer to `[type.notetaker]`. At least one regular worker is required. Numbered instance IDs are never recycled or renumbered by the management commands. The next number for each type is stored in its type section, so removal does not make an ID available again.
 
 The launcher resolves each worker into its type settings and instance ID before starting panes. It rejects duplicate IDs, missing types or role files, invalid names, and conflicting reserved IDs before creating a session or worktree. It continues to reject unsupported CLIs and missing models. An instance's ID is the mailbox destination and `AGENT_ROLE`. The type is also exposed to the pane as `AGENT_WORKER_TYPE`. Startup instructions identify both values and avoid fixed pane numbers. Worktree paths and branches use the instance ID.
 

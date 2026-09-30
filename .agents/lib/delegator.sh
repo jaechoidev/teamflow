@@ -4,8 +4,8 @@
 # workers run under `scripts/teamflow up --workers`.
 #
 # Usage:
-#   delegator.sh task <task.sh args...>   e.g. task new dev-mid 'Title' <<'EOF'
-#   delegator.sh pane <pane.sh args...>   e.g. pane send-to dev-mid "Task T-0001: ..."
+#   delegator.sh task <task.sh args...>   e.g. task new developer-l-1 'Title' <<'EOF'
+#   delegator.sh pane <pane.sh args...>   e.g. pane send-to developer-l-1 "Task T-0001: ..."
 #
 # AGENT_ROLE, AGENT_MAILBOX, and AGENT_LIB_DIR come from this file's own
 # location (its repo's git common dir), never from the caller's environment

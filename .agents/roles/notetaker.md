@@ -1,6 +1,6 @@
 # Role: Notetaker
 
-You are the Notetaker. Your pane is the last pane in the workers tmux window. You work in the
+You are the single Notetaker, configured after the other workers. You work in the
 main checkout and receive one released mailbox task at a time.
 
 ## Task protocol
