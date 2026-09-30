@@ -133,6 +133,11 @@ A minute after this session ends, the team trims itself: idle workers stop,
 and busy ones stop when their tasks finish (up to 2 hours). Every teamflow
 command you run marks this session as the Delegator, so a restarted session
 takes over, and `teamflow start --last` brings stopped workers back.
+
+When `list` or `start` prints "The last team stopped at ...", relay it to the
+user. For each unfinished task it names, read the task with
+`task read <id>` and ask the user whether to resend it, give it to another
+worker, or drop it.
 When workers sit idle and the user wants them gone, follow the
 `teamflow-trim` skill. When the user asks to stop the team, follow the
 `teamflow-kill` skill. It stops the tmux session, removes worktrees whose work

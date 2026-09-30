@@ -50,7 +50,8 @@ Rules:
   Agents may propose memory questions. Only the user writes own-words
   explanations and answers.
 - In workers mode, a minute after the Delegator's agent session ends, the
-  team trims itself: idle workers stop, busy ones when their tasks finish.
-  Unmerged worktrees are kept.
+  team trims itself: idle workers stop, busy ones when their tasks finish,
+  and the rest after 2 hours. Unmerged worktrees are kept, and a stop note
+  names unfinished tasks for the next session.
 - Keep task logs concise; never put secrets in them.
 # <<< teamflow <<<

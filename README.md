@@ -382,21 +382,26 @@ reviewed work enters main; nothing is pushed without your approval.
 A team started in workers mode stops by itself after its Delegator is gone,
 so closing your agent does not leave workers running. Every teamflow command
 the Delegator runs records its agent session in `.git/teamflow/delegator`,
-and a watcher that runs as a tmux background job checks it every 30 seconds:
+and a watcher that runs as a tmux background job checks it once a minute:
 
 1. When the Delegator's process is gone, the watcher waits one minute. A new
    session that runs any teamflow command in that minute takes over and
    cancels the stop.
-2. It then runs `teamflow trim` on every check. Idle workers go, and once
-   every worker is idle the team stops like `--kill`. Busy workers finish
-   their tasks first, so results reach the mailbox, and the Notetaker
-   finishes waiting notes.
-3. If a worker is still busy after 2 hours, in case it hangs, the team stops
-   anyway.
+2. It then runs `teamflow trim`. Idle workers go, and once every worker is
+   idle the team stops like `--kill`. Busy workers finish their tasks first,
+   so results reach the mailbox, and the Notetaker finishes waiting notes.
+3. It trims again every minute for the first 10 minutes, then every hour.
+   A worker that records a result or finishes a note wakes the watcher, so
+   finished workers go at once instead of at the next check.
+4. Two hours after the Delegator left, the team stops even if a worker is
+   still busy, in case one hangs.
 
 Stopping removes merged worktrees and keeps every other worktree. Nothing is
 discarded, and `teamflow start --last` or `teamflow add` brings the same
-workers back with their conversations.
+workers back with their conversations. The watcher leaves a note in
+`.git/teamflow/stopped` saying when and why the team stopped and which tasks
+were unfinished. `teamflow list` shows it, and the next start shows it once
+more and clears it.
 
 This works however the agent ends, including a closed terminal, a crash, or
 `kill -9`, which agent exit hooks miss. For Claude Code and similar agents,

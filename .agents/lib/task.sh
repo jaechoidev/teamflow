@@ -23,6 +23,7 @@
 #                             waits until a notetaker is in the team
 #   noted <id> <summary>      notetaker finishes the note pass and removes the
 #                             completed task, then receives the next one
+#   wake                      internal: wake the team's watcher (watch.sh)
 #
 # Concurrency: one directory per task; creation is an atomic mkdir race;
 # claims likewise: `take` and `done` both gate on the task's claim/
@@ -47,6 +48,13 @@ json_str() { # render $1 as a JSON string literal (escape \ and ")
   s="${s//\"/\\\"}"
   printf '"%s"' "$s"
 }
+wake_watcher() { # a finished task lets the watcher trim its worker at once
+  local pid rest
+  read -r pid rest 2>/dev/null < "$AGENT_MAILBOX/watcher" || return 0
+  ps -o command= -p "$pid" 2>/dev/null | grep -q 'watch\.sh' && kill -USR1 "$pid" 2>/dev/null
+  return 0
+}
+
 next_id() { # monotonic even after the notetaker removes completed records
   local i=0 d tries=0 tmp
   until mkdir "$AGENT_MAILBOX/id-lock" 2>/dev/null; do
@@ -141,6 +149,7 @@ case "$cmd" in
     mv "$tmp" "$TASKS/$id/result.md"
     echo "done" > "$TASKS/$id/status"
     echo "$(now) done by $role" >> "$TASKS/$id/events"
+    wake_watcher
     ;;
   read)
     id="${1:?usage: read <id>}"
@@ -207,6 +216,9 @@ case "$cmd" in
     if ! awk -F '\t' '$1 == "notetaker" { found = 1 } END { exit !found }' "$AGENT_MAILBOX/panes.tsv" 2>/dev/null; then
       echo "no notetaker in the team: $id waits for one (scripts/teamflow workers add notetaker)"
     fi
+    ;;
+  wake)
+    wake_watcher
     ;;
   noted)
     id="${1:?usage: noted <id> <summary>}"

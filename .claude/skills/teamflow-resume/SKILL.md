@@ -21,7 +21,9 @@ message and offer the `teamflow` skill instead. It does not reopen the user's
 separate Delegator chat.
 
 If workers are already running, `start` returns the existing tmux session.
-Report the printed session name and check `./scripts/teamflow list`. Inspect
+Report the printed session name and check `./scripts/teamflow list`. If
+`start` printed "The last team stopped at ...", relay it, and ask the user
+what to do with each unfinished task it names: resend, reassign, or drop. Inspect
 workers with `bash .agents/lib/delegator.sh pane tail <id>` before
 dispatching tasks, and handle any project trust prompts for this authorized
 workspace. Then continue as the Delegator with the `teamflow` skill.

@@ -74,6 +74,7 @@ case "${1:-}" in
     rm -rf "$tasks/$id" || fail "cannot remove $id"
     rm -f "$queue/active"
     notify_next
+    bash "$lib/task.sh" wake
     ;;
   *) fail "usage: note-queue.sh poke|resume|finish <id>" ;;
 esac
