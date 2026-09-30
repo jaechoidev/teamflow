@@ -68,9 +68,9 @@ plan is ready to execute, decide which workers it needs:
   type before adding another. Add parallel workers only for independent,
   non-overlapping tasks.
 - The first `add` starts the tmux session. Later adds open one window each.
-  `add <type>` first brings back a default-team instance of that type that is
-  missing from the session. Never pass `--save` unless the user asks to
-  change the default team.
+  `add <type>` first reuses a worker of that type that is not running, with
+  its conversation, and creates a new number only when all of them are busy.
+  Never pass `--save` unless the user asks to change the default team.
 - Add a Notetaker only when the user wants project notes. Project notes
   belong to the Notetaker. Never write notes yourself or create note tasks.
 

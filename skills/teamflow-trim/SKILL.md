@@ -12,7 +12,8 @@ Use this skill only when the user asks to clear idle workers.
 3. Run `./scripts/teamflow trim`. It removes every worker without an assigned
    or in-progress task. The Notetaker stays while it writes a note or
    released tasks wait for it. Removed workers keep their conversations and
-   branches, and `teamflow add` can bring them back.
+   branches. A later `teamflow add <type>` reuses them before it creates a
+   new worker, so their conversations resume.
 4. If every worker was idle, `trim` stops the whole team like `--kill`. In
    that case, continue with steps 4 to 7 of the `teamflow-kill` skill to
    decide about kept worktrees.

@@ -428,6 +428,21 @@ def instances(cp, kind=None):
             if kind is None or cp[section].get("type") == kind]
 
 
+def used_instances(root, cp, kind=None):
+    """Numbered instances launched before, most recently used first. Each
+    keeps its conversation record, so bringing one back resumes it."""
+    registry = mailbox_path(root) / "sessions"
+    found = []
+    if registry.is_dir():
+        for entry in registry.iterdir():
+            match = re.fullmatch(r"(.+)-[1-9][0-9]*", entry.name)
+            if not match or not cp.has_section(f"type.{match.group(1)}"):
+                continue
+            if kind is None or match.group(1) == kind:
+                found.append((read_record(entry).get("UPDATED_AT", ""), entry.name))
+    return [name for _, name in sorted(found, reverse=True)]
+
+
 def stopped_add_message(path, saved, kind, worker_id):
     if worker_id:
         return (f"no team is running. {worker_id} is already in the default team, so starting the team "
@@ -438,12 +453,19 @@ def stopped_add_message(path, saved, kind, worker_id):
 
 
 def add_worker(root, path, value, save):
-    """Add a worker by type, or bring back a default-team instance by ID.
-    While a team runs, a type first brings back its default-team instances
-    that are missing from the session, then mints a new numbered one."""
+    """Add a worker by type, or bring one back by ID. A type brings back a
+    worker of that type that is not running before it mints a new number:
+    first a default-team instance, then the most recently used one. The
+    worker keeps its ID, conversation, and branch."""
     saved = read_config(path)
-    explicit = saved.has_section(f"worker.{value}")
-    kind = saved[f"worker.{value}"].get("type", "") if explicit else value
+    used = used_instances(root, saved)
+    explicit = saved.has_section(f"worker.{value}") or value in used
+    if saved.has_section(f"worker.{value}"):
+        kind = saved[f"worker.{value}"].get("type", "")
+    elif explicit:
+        kind = re.fullmatch(r"(.+)-[1-9][0-9]*", value).group(1)
+    else:
+        kind = value
     if not saved.has_section(f"type.{kind}"):
         raise ConfigError(f"unknown worker type or instance: {value}")
     record = running_team(root, path)
@@ -466,9 +488,11 @@ def add_worker(root, path, value, save):
     if explicit or kind == "notetaker":
         worker_id = value if explicit else "notetaker"
     else:
-        # --save grows the default team, so it always creates a new instance.
-        returning = [worker for worker in instances(saved, kind)
-                     if worker not in running] if record and not save else []
+        # --save grows the default team, so it skips workers already in it.
+        returning = [] if save else [worker for worker in instances(saved, kind) if worker not in running]
+        returning += [worker for worker in used_instances(root, saved, kind)
+                      if worker not in running and worker not in returning
+                      and not saved.has_section(f"worker.{worker}")]
         if returning:
             worker_id = returning[0]
         else:
@@ -484,16 +508,19 @@ def add_worker(root, path, value, save):
             text = update_option(text, f"type.{kind}", "next_id", number + 1)
         changed[target] = with_worker(text, parsed[target], worker_id, kind)
         resolve(parse_text(changed[target]))
+    # Checked before launching, which writes this worker's conversation record.
+    launched_before = (mailbox_path(root) / "sessions" / worker_id).exists()
     live = commit_change(root, path, changed, record)
+    verb = f"brought back {worker_id}" if number is None and launched_before else f"added {worker_id}"
     if live and path in changed:
-        print(f"added {worker_id}, launched its window, and saved it to {path.name}")
+        print(f"{verb}, launched its window, and saved it to {path.name}")
     elif live and saved.has_section(f"worker.{worker_id}"):
-        print(f"added {worker_id} from the default team to this session and launched its window")
+        print(f"{verb} from the default team and launched its window")
     elif live:
-        print(f"added {worker_id} to this session and launched its window. "
+        print(f"{verb} to this session and launched its window. "
               f"{path.name} is unchanged: add --save to keep it for the next start")
     else:
-        print(f"added {worker_id} to the default team in {path.name}. It launches at the next start")
+        print(f"{verb} to the default team in {path.name}. It launches at the next start")
 
 
 def remove_worker(root, path, worker_id, save):
@@ -528,17 +555,21 @@ def remove_worker(root, path, worker_id, save):
 
 
 def only_roster(root, path, value):
-    """Print a session roster with a single worker: a default-team instance
-    by ID, the first default-team instance of a type, or a new one."""
+    """Print a session roster with a single worker, chosen like add: an
+    instance by ID, or for a type its first default-team instance, else its
+    most recently used one, else a new one."""
     text = path.read_text()
     cp = parse_text(text)
     resolve(cp)
+    used = used_instances(root, cp)
     if cp.has_section(f"worker.{value}"):
         worker_id, kind = value, cp[f"worker.{value}"].get("type", "")
+    elif value in used:
+        worker_id, kind = value, re.fullmatch(r"(.+)-[1-9][0-9]*", value).group(1)
     elif cp.has_section(f"type.{value}") and value != "delegator":
         kind = value
-        existing = instances(cp, kind)
-        worker_id = existing[0] if existing else ("notetaker" if kind == "notetaker" else "")
+        choices = instances(cp, kind) + used_instances(root, cp, kind)
+        worker_id = choices[0] if choices else ("notetaker" if kind == "notetaker" else "")
     else:
         raise ConfigError(f"--only: no worker or type named {value} in {path.name}")
     for other in instances(cp):

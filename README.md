@@ -101,7 +101,7 @@ something is missing it says exactly what and where to fix it.
 teamflow types                      # the worker catalog
 teamflow list                       # the running roster
 teamflow add developer-m            # add a worker. With no team running, start one
-teamflow add developer-l-1          # bring back a default-team worker
+teamflow add developer-m-1          # bring back that worker and its conversation
 teamflow add researcher --save      # also add it to the default team
 teamflow remove developer-m-1
 teamflow sync                       # repair the running windows
@@ -120,10 +120,13 @@ default team in `teamflow.conf`. `teamflow list` marks workers that exist in
 this session only.
 
 With no team running, `add` starts one with just that worker, so a team can
-grow from zero as the Delegator needs workers. `add <type>` first brings back
-a default-team instance of that type that is missing from the session, then
-creates a new numbered one. `add <id>` brings back that default-team
-instance. A plain `remove` with no team running refuses, because there is no
+grow from zero as the Delegator needs workers. `add <type>` reuses a worker
+of that type that is not running before it creates a new number: first a
+default-team instance, then the most recently used one, including workers
+removed by `trim` or `remove`. A reused worker keeps its ID, conversation,
+and branch, so its conversation resumes. A new number appears only when every
+known worker of that type is already running, for parallel work.
+`add <id>` brings back that exact worker. A plain `remove` with no team running refuses, because there is no
 session to change. With `--save` and no team running, `add` and `remove` edit
 only the default team.
 
