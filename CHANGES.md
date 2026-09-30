@@ -3,7 +3,7 @@
 Newest first. Each version is a git tag `vX.Y.Z`. An entry lists the changes
 a user notices and any step a project needs when it moves to that version.
 
-## 0.1.0 (unreleased)
+## 0.1.0 (2026-09-30)
 
 The first version installed once per machine.
 
