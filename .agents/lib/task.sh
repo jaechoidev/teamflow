@@ -19,7 +19,8 @@
 #   list                      list all tasks (one line each)
 #   ack                       record that this role loaded its instructions
 #   release <id> [commit]      delegator confirms result was read and any code
-#                             change integrated; queue the note pass
+#                             change integrated; queue the note pass, which
+#                             waits until a notetaker is in the team
 #   noted <id> <summary>      notetaker finishes the note pass and removes the
 #                             completed task, then receives the next one
 #
@@ -202,6 +203,10 @@ case "$cmd" in
     [ ! -f "$TASKS/$id/released" ] || fail "$id is already released"
     printf 'released: %s\nintegrated_commit: %s\n' "$(now)" "${2:-}" > "$TASKS/$id/released"
     bash "$(dirname "$0")/note-queue.sh" poke
+    # Notes belong to the notetaker. Without one, the task waits for one.
+    if ! awk -F '\t' '$1 == "notetaker" { found = 1 } END { exit !found }' "$AGENT_MAILBOX/panes.tsv" 2>/dev/null; then
+      echo "no notetaker in the team: $id waits for one (scripts/teamflow workers add notetaker)"
+    fi
     ;;
   noted)
     id="${1:?usage: noted <id> <summary>}"

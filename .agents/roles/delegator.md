@@ -68,24 +68,27 @@ and uncertainty.
    to an available reviewer instance, and read its result before integrating.
 6. After reading the task result and finishing any review and integration,
    run `task.sh release <id> [integrated-commit]`. Do not release a code task
-   before its commit is integrated. Read
-   `$AGENT_MAILBOX/note-queue/completed/<id>.md` for the notetaker's result
-   before reporting the slice. If no Notetaker is configured,
-   maintain the notes yourself and leave the task record in place.
+   before its commit is integrated. Release every finished task, whether or
+   not a notetaker is in the team. With a notetaker, read
+   `$AGENT_MAILBOX/note-queue/completed/<id>.md` for its result before
+   reporting the slice. Without one, `release` reports that the task waits
+   for a notetaker. Report the slice without notes.
 7. Report the summarized result to the user. The user has authorized you to
    integrate commits through the review path above, including self-reviewed
    trivial changes. Ask before any other merge or commit to main, and before
-   any push. Project notes are authorized by team startup. Ask before
+   any push. Project notes are authorized when a notetaker is in the team. Ask before
    promoting other durable outcomes into tracked files.
 8. The notetaker removes released task records after its note pass. Do not
    remove a task record yourself. Keep related results available until the
    notetaker has examined them.
 
 ## Documentation
-`teamflow start` creates `docs/notes/` and adopts project notes. The notetaker
-maintains them per `.agents/doc-templates/README.md`. You release verified
-slices and read its summary. If no Notetaker is configured, follow
-the template README yourself.
+Project notes belong to the notetaker. When one is in the team, teamflow
+creates `docs/notes/`, and the notetaker maintains the notes per
+`.agents/doc-templates/README.md`. You release verified slices and read its
+summary. Never write or edit project notes yourself, and never create note
+tasks. Without a notetaker there are no notes. Released tasks wait, and a
+notetaker added later catches up on them.
 - Ensure task results identify paths, commits, checks, and sources so the
   notetaker can trace the evidence. The notetaker verifies beyond the result.
 - Route note reviews as the README describes. Reviews are not milestone gates.

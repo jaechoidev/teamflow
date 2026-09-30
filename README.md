@@ -86,9 +86,11 @@ says exactly what and where to fix it.
 ```
 teamflow workers list
 teamflow workers add developer-m
+teamflow workers add developer-l-1
 teamflow workers add researcher --save
 teamflow workers remove developer-m-1
 teamflow workers sync
+teamflow start --only notetaker
 ```
 
 `teamflow.conf` is the default team. While a team runs, `add` and `remove`
@@ -96,15 +98,27 @@ change that session only: adding launches the pane, removing closes it, and
 other workers keep running. The session roster lives in
 `.git/teamflow/running.conf`, so `teamflow.conf` and `git status` stay
 unchanged. After `--kill`, the next start begins from `teamflow.conf` again.
-Add `--save` to also write the change to `teamflow.conf`. When the team is
-stopped, `add` and `remove` edit `teamflow.conf` for the next start.
-`workers list` marks workers that exist in this session only.
+Add `--save` to also write the change to `teamflow.conf`. `workers list`
+marks workers that exist in this session only.
+
+`add <type>` first brings back a default-team instance of that type that is
+missing from the session, then creates a new numbered one. `add <id>` brings
+back that default-team instance. With no team running, a plain `add` or
+`remove` has no session to change, so it refuses and explains the choices:
+start the default team, start a team with only that worker, or rerun with
+`--save` to change the default team.
+
+`start --only <type-or-id>` launches a team with a single worker, for
+example only the Notetaker to catch up on waiting notes. `teamflow.conf`
+stays the default team. While a smaller team runs, `start` reattaches and
+names the default workers the session lacks.
 
 Instances have stable numbered IDs for tasks, panes, conversations, worktrees,
 and branches. A number is never reused, including numbers from earlier
 sessions. Removal keeps the worker's history, and its worktree stays until
 `--kill` cleans it up (see Stopping and worktrees). It refuses an unfinished
-assigned task and cannot remove the last regular worker. `workers sync` makes
+assigned task or a note in progress, and it cannot remove the last worker
+(stop the team with `--kill` instead). `workers sync` makes
 the running panes match the session roster again, for example after a pane
 died or an interrupted change. Edits to `teamflow.conf` while a team runs
 apply at the next start. Changes to settings of running workers (model,
@@ -275,6 +289,7 @@ upgrades).
   reads the result and underlying evidence, updates notes, and runs
   `task.sh noted <id> '<summary>'`. That removes the completed task record
   and sends the next released task. No timer runs while it writes a note.
+  Without a Notetaker, `release` reports that the task waits for one.
 
 ## Integrating approved work
 
@@ -374,15 +389,19 @@ checkout's current commit. A kept branch is reused, so its work continues.
 `init` copies five plain Markdown templates into `.agents/doc-templates/`:
 source, concept, code map, decision, and experiment. They share one
 frontmatter convention with a review status, and the folder's README.md
-is the workflow. `teamflow up` creates `docs/notes/` and adopts the workflow.
+is the workflow. Notes belong to the Notetaker alone. Teamflow creates
+`docs/notes/` when a Notetaker joins the team, at start or through
+`workers add notetaker`, and never otherwise. The Delegator never writes
+notes. Without a Notetaker, released tasks wait in the mailbox, and a
+Notetaker added later works through them one at a time.
 The Notetaker keeps notes current with each completed
 implementation slice, using worker results to find the relevant code,
 tests, discussion, and sources. The user writes
 own-words explanations and memory answers in concept notes. Notes link to
 Superpowers specs and plans rather than copying them. Obsidian is
 optional: open `docs/` as a vault to browse notes, specs, and plans
-together. Init does not create a vault or `docs/`. Up creates the notes
-folder without configuring Obsidian.
+together. Init does not create a vault or `docs/`, and teamflow creates the
+notes folder without configuring Obsidian.
 
 ## Conversation persistence
 

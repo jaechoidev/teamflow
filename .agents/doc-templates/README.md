@@ -1,7 +1,8 @@
 # Project notes
 
-Templates for notes the team keeps current while it builds. `teamflow up`
-creates `docs/notes/` and adopts project notes. `teamflow init` copies this
+Templates for notes the team keeps current while it builds. Notes belong to
+the Notetaker: teamflow creates `docs/notes/` when a Notetaker joins the team,
+at start or when one is added. `teamflow init` copies this
 template folder and, as with roles, stages a changed shipped file as
 `<file>.new` instead of overwriting yours. Plain Markdown works in any editor,
 and Obsidian reads the frontmatter as properties.
@@ -40,7 +41,7 @@ plugin fills `{{title}}` (with the file name) and `{{date}}` too, but it
 only reads templates inside the vault, so copy these files to
 `docs/templates/` to use it. Keep `docs/.obsidian/` out of commits unless
 the user wants shared settings. Init does not create a vault or `docs/`.
-`up` creates `docs/notes/` but does not configure Obsidian.
+Teamflow creates `docs/notes/` with the Notetaker but does not configure Obsidian.
 
 ## Superpowers specs and plans
 
@@ -123,7 +124,8 @@ reviewed note changed since its review.
 ## Who does what
 
 - Notetaker: investigates evidence, keeps notes current, and sets honest
-  statuses. If no Notetaker is configured, the Delegator does this.
+  statuses. Only the Notetaker does this. Without one there are no notes,
+  and released tasks wait until a Notetaker joins.
 - Delegator: releases verified work and reads the note completion summary.
 - Developers and Researcher: supply evidence in task results, and edit
   notes only when assigned.

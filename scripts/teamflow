@@ -29,6 +29,8 @@
 #                    One team runs per repo: stop the running session with
 #                    --kill before starting another config.
 #   --no-attach      build detached (up only; start is always detached)
+#   --only <worker>  start or up: launch a team with just this worker, given as
+#                    an instance ID or a type. The config stays the default team.
 #   --workers        up only: start tiled worker panes without a
 #                    Delegator pane. The Delegator runs in your own terminal
 #                    and reaches the mailbox through .agents/lib/delegator.sh.
@@ -555,7 +557,7 @@ PY
 
 # ---------- start --------------------------------------------------------------
 
-cmd_start() { # $1 --config value ('' = default config)
+cmd_start() { # $1 --config value ('' = default config)  $2 --only value
   local root=""
   if git rev-parse --show-toplevel >/dev/null 2>&1; then
     root="$(team_root)" || exit $?
@@ -566,7 +568,7 @@ cmd_start() { # $1 --config value ('' = default config)
      || ! git -C "$root" rev-parse --verify HEAD >/dev/null 2>&1; then
     cmd_init
   fi
-  cmd_up 0 "$1" 1
+  cmd_up 0 "$1" 1 "${2:-}"
 }
 
 # Shared worker conversation and launch preparation.
@@ -673,8 +675,8 @@ prepare_worker() {
 
 # ---------- up -----------------------------------------------------------------
 
-cmd_up() { # $1 attach (1|0)  $2 --config value ('' = default config)  $3 workers only (1|0)
-  local mode_attach="$1" conf_arg="$2" team_mode=full
+cmd_up() { # $1 attach (1|0)  $2 --config value ('' = default config)  $3 workers only (1|0)  $4 --only value
+  local mode_attach="$1" conf_arg="$2" team_mode=full only="${4:-}"
   [ "${3:-0}" = 1 ] && team_mode=workers
 
   command -v tmux >/dev/null 2>&1 || die "tmux not found (brew install tmux / apt install tmux)"
@@ -712,12 +714,31 @@ cmd_up() { # $1 attach (1|0)  $2 --config value ('' = default config)  $3 worker
     if [ -n "$saved_hash" ] && [ "$saved_hash" != "$(conf_hash "$conf")" ]; then
       say "$conf changed since $ACTIVE_SESSION started. It applies at the next start (teamflow --kill, then teamflow start)"
     fi
-    mkdir -p "$root/docs/notes" || die "cannot create project notes at $root/docs/notes"
+    [ -z "$only" ] || say "a team is already running, so --only $only was ignored. Add workers with: teamflow workers add <type-or-id>"
+    if [ -f "$mailbox/running.conf" ]; then
+      local absent
+      absent="$(comm -23 \
+        <(printf '%s\n' "$confout" | tail -n +2 | cut -d "$TSV_SEP" -f1 | grep -vx delegator | sort) \
+        <(conf_read "$mailbox/running.conf" 2>/dev/null | tail -n +2 | cut -d "$TSV_SEP" -f1 | sort) \
+        | paste -sd ' ' -)"
+      [ -z "$absent" ] || say "this session runs without these default workers: $absent. Add one with: teamflow workers add <id>"
+    fi
     sess="$ACTIVE_SESSION"
     say "session $sess already running — reattaching (no duplicate launched)"
     [ "$mode_attach" = 1 ] && exec tmux attach-session -t "=$sess"
     echo "$sess"
     return 0
+  fi
+
+  # --only: the session roster keeps a single worker. The config itself
+  # stays the team's config, so the next plain start is the default team.
+  local roster="$conf"
+  if [ -n "$only" ]; then
+    mkdir -p "$mailbox" || die "cannot create mailbox at $mailbox"
+    roster="$mailbox/running.conf.next"
+    python3 "$TOOL_HOME/scripts/teamflow_workers.py" only "$conf" "$root" "$only" > "$roster" \
+      || { rm -f "$roster"; exit 1; }
+    confout="$(conf_read "$roster")" || die "cannot parse the --only roster"
   fi
 
   # ---- preflight: config + CLIs (fail before creating anything) -------------
@@ -738,7 +759,7 @@ cmd_up() { # $1 attach (1|0)  $2 --config value ('' = default config)  $3 worker
     [ -f "$root/.agents/lib/note-queue.sh" ] \
       || die "notetaker queue missing; run teamflow init to install .agents/lib/note-queue.sh"
   fi
-  worker_count="$(printf '%s\n' "$tsv" | awk -F "$TSV_SEP" '$1 != "delegator" && $1 != "notetaker"' | grep -c .)"
+  worker_count="$(printf '%s\n' "$tsv" | awk -F "$TSV_SEP" '$1 != "delegator"' | grep -c .)"
   [ "$worker_count" -gt 0 ] \
     || die "config must include at least one worker pane in $conf"
 
@@ -766,8 +787,10 @@ EOF
   git -C "$root" rev-parse --verify --quiet HEAD >/dev/null 2>&1 \
     || die "repo has no commits yet — make an initial commit first (worktrees need HEAD)"
 
-  # Starting the team adopts project notes. Keep init side effect free here.
-  mkdir -p "$root/docs/notes" || die "cannot create project notes at $root/docs/notes"
+  # Notes belong to the notetaker: the folder appears when one starts.
+  if [ -n "$note_tsv" ]; then
+    mkdir -p "$root/docs/notes" || die "cannot create project notes at $root/docs/notes"
+  fi
 
   # Resolve CLIs to absolute paths NOW: pane shells may rewrite PATH
   # (e.g. ~/.zshenv prepending ~/.local/bin), which would otherwise swap the
@@ -836,7 +859,11 @@ EOF
     die "pane boot failed: '${order_roles[0]}' exited immediately (session rolled back)"
   team_write "$mailbox" "SESSION=$sess" "CREATED=$(session_created "$sess")" \
     "CONFIG=$conf" "CONFIG_HASH=$(conf_hash "$conf")" "ROOT=$root" "STARTED_AT=$(now_utc)" "MODE=$team_mode"
-  cp "$conf" "$mailbox/running.conf" || boot_fail "cannot save running config"
+  if [ "$roster" != "$conf" ]; then
+    mv "$roster" "$mailbox/running.conf" || boot_fail "cannot save the session roster"
+  else
+    cp "$conf" "$mailbox/running.conf" || boot_fail "cannot save the session roster"
+  fi
   # Clear routing values from this session. Each pane also unsets them
   # before starting a native Claude CLI, while z.ai panes source zai_env.
   local v
@@ -1173,7 +1200,7 @@ fi
 delegate_to_tool_home "$@"
 unset TEAMFLOW_FROM_PROJECT # keep it out of the panes this run starts
 
-MODE="" NO_ATTACH=0 CONFIG="" CONFIG_GIVEN=0 WORKERS=0 WORKER_ACTION="" WORKER_VALUE="" SAVE=0
+MODE="" NO_ATTACH=0 CONFIG="" CONFIG_GIVEN=0 WORKERS=0 WORKER_ACTION="" WORKER_VALUE="" SAVE=0 ONLY=""
 
 pick_mode() {
   [ -z "$MODE" ] || [ "$MODE" = "$1" ] || die "choose one mode: '$MODE' and '$1' cannot be combined"
@@ -1194,6 +1221,17 @@ while [ $# -gt 0 ]; do
     --no-attach) NO_ATTACH=1 ;;
     --workers) WORKERS=1 ;;
     --save) SAVE=1 ;;
+    --only|--only=*)
+      [ -z "$ONLY" ] || die "--only given more than once"
+      if [ "$1" = --only ]; then
+        [ $# -ge 2 ] || die "--only requires a worker type or instance ID (e.g. --only notetaker)"
+        shift
+        ONLY="$1"
+      else
+        ONLY="${1#--only=}"
+      fi
+      case "$ONLY" in ""|-*) die "--only requires a worker type or instance ID, got '$ONLY'" ;; esac
+      ;;
     --config|--config=*)
       [ "$CONFIG_GIVEN" = 0 ] || die "--config given more than once"
       if [ "$1" = "--config" ]; then
@@ -1224,13 +1262,15 @@ done
 # teamflow skill starts the workers.
 if [ -z "$MODE" ]; then
   usage
-  [ "$NO_ATTACH$WORKERS$CONFIG_GIVEN$SAVE" = 0000 ] || die "choose a mode, e.g. start or up"
+  [ "$NO_ATTACH$WORKERS$CONFIG_GIVEN$SAVE" = 0000 ] && [ -z "$ONLY" ] || die "choose a mode, e.g. start or up"
   exit 0
 fi
 [ "$NO_ATTACH" = 0 ] || [ "$MODE" = up ] || [ "$MODE" = start ] \
   || die "--no-attach applies to start or up only, not to $MODE"
 [ "$WORKERS" = 0 ] || [ "$MODE" = up ] || [ "$MODE" = start ] \
   || die "--workers applies to start or up only, not to $MODE (--verify and --kill follow the running team)"
+[ -z "$ONLY" ] || [ "$MODE" = up ] || [ "$MODE" = start ] \
+  || die "--only applies to start or up only"
 [ "$SAVE" = 0 ] || { [ "$MODE" = workers ] && { [ "$WORKER_ACTION" = add ] || [ "$WORKER_ACTION" = remove ]; }; } \
   || die "--save applies to workers add or workers remove only"
 [ "$CONFIG_GIVEN" = 0 ] || [ "$MODE" != worktrees ] \
@@ -1240,8 +1280,8 @@ fi
 
 case "$MODE" in
   init)           cmd_init ;;
-  start)          cmd_start "$CONFIG" ;;
-  up)             cmd_up "$((1 - NO_ATTACH))" "$CONFIG" "$WORKERS" ;;
+  start)          cmd_start "$CONFIG" "$ONLY" ;;
+  up)             cmd_up "$((1 - NO_ATTACH))" "$CONFIG" "$WORKERS" "$ONLY" ;;
   --verify)       cmd_verify "$CONFIG" ;;
   --check-models) cmd_check_models "$CONFIG" ;;
   --kill)         cmd_kill "$CONFIG" ;;

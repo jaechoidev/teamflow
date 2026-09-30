@@ -41,14 +41,16 @@ Rules:
   check. It inspects the full diff, verifies the change, and reports the
   evidence. Broader or unclear changes go to Reviewer. This review and
   integration flow has the user's approval; pushes still require approval.
-- Task records are scratch. Starting teamflow authorizes project notes.
+- Task records are scratch. A notetaker in the team authorizes project notes.
   Promote other durable decisions/docs into tracked files only with user
   approval.
-- `teamflow start` creates `docs/notes/` and adopts project notes. They follow
+- Project notes belong to the Notetaker alone. When one is in the team,
+  teamflow creates `docs/notes/`. Notes follow
   `.agents/doc-templates/README.md`. The Notetaker reads task results as
   triggers, then checks code, tests, discussions, decisions, and original
   sources for the relevant note types. The Delegator reads its note summary
-  before reporting a slice. Other roles supply evidence in task results.
+  before reporting a slice. Without a Notetaker there are no notes, and
+  released tasks wait for one. Other roles supply evidence in task results.
   Agents may propose memory questions. Only the user writes own-words
   explanations and answers.
 - Keep task logs concise; never put secrets in them.

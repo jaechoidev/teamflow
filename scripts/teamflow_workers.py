@@ -16,7 +16,6 @@ import time
 
 SEP = "\x1f"
 SLUG = re.compile(r"^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$")
-RESERVED = {"delegator", "notetaker"}
 
 class ConfigError(Exception):
     pass
@@ -86,8 +85,6 @@ def resolve(cp):
         if not role_file or Path(role_file).is_absolute() or ".." in Path(role_file).parts:
             raise ConfigError(f"type {kind} needs a safe relative role_file")
         rows.append(pane_row(worker_id, definition, kind, role_file))
-    if not any(row[0] not in RESERVED for row in rows):
-        raise ConfigError("config requires at least one regular worker")
     ids = [row[0] for row in rows]
     if len(ids) != len(set(ids)):
         raise ConfigError("duplicate worker ID")
@@ -243,10 +240,9 @@ def guard_removal(root, worker_id):
     for task, destination in task_destinations(root):
         if destination == worker_id and (task / "status").read_text().strip() in {"assigned", "in-progress"}:
             raise ConfigError(f"{worker_id} has unfinished task {task.name}")
-    if worker_id == "notetaker":
-        queue = mailbox_path(root) / "note-queue"
-        if (queue / "active").exists() or any((task / "released").exists() for task, _ in task_destinations(root)):
-            raise ConfigError("notetaker queue is not empty")
+    # Released tasks wait for a later notetaker. Only a note in progress blocks.
+    if worker_id == "notetaker" and (mailbox_path(root) / "note-queue" / "active").exists():
+        raise ConfigError("the notetaker is writing a note. Remove it after it finishes")
 
 
 def launch_target(session):
@@ -297,6 +293,8 @@ def sync_workers(root, path, desired):
             raise ConfigError(f"missing z.ai env file: {zai_env}")
         if worker == "notetaker" and not (root / ".agents/lib/note-queue.sh").is_file():
             raise ConfigError("notetaker queue library is missing")
+    if any(row[0] == "notetaker" for row in missing):
+        (root / "docs/notes").mkdir(parents=True, exist_ok=True)  # notes arrive with the notetaker
     # The pane launcher reads a new instance's settings from the session roster.
     session = session_config(root)
     previous = session.read_text() if session.exists() else None
@@ -460,42 +458,85 @@ def list_workers(root, path):
                   file=sys.stderr)
 
 
-def add_worker(root, path, kind, save):
+def instances(cp, kind=None):
+    """Worker IDs in roster order, optionally only those of one type."""
+    return [section[7:] for section in sections(cp, "worker.")
+            if kind is None or cp[section].get("type") == kind]
+
+
+def stopped_add_message(path, saved, kind, worker_id):
+    if worker_id:
+        return (f"no team is running. {worker_id} is already in the default team, so starting the team "
+                f"launches it. To start it alone: scripts/teamflow start --only {worker_id}")
+    return (f"no team is running. Start the default team, then add {kind}, or start a team with only this "
+            f"worker: scripts/teamflow start --only {kind}. To add {kind} to the default team in "
+            f"{path.name} instead, use --save")
+
+
+def add_worker(root, path, value, save):
+    """Add a worker by type, or bring back a default-team instance by ID.
+    While a team runs, a type first brings back its default-team instances
+    that are missing from the session, then mints a new numbered one."""
+    saved = read_config(path)
+    explicit = saved.has_section(f"worker.{value}")
+    kind = saved[f"worker.{value}"].get("type", "") if explicit else value
+    if not saved.has_section(f"type.{kind}"):
+        raise ConfigError(f"unknown worker type or instance: {value}")
+    record = running_team(root, path)
+    if not record and not save:
+        default = value if explicit else next(iter(instances(saved, kind)), "")
+        raise ConfigError(stopped_add_message(path, saved, kind, default))
     record, targets = change_targets(root, path, save)
     contents = {target: target.read_text() for target in targets}
     parsed = {target: parse_text(text) for target, text in contents.items()}
-    for target, cp in parsed.items():
+    for cp in parsed.values():
         resolve(cp)
         if not cp.has_section(f"type.{kind}"):
             raise ConfigError(f"unknown worker type: {kind}")
     role_file = root / parsed[targets[0]][f"type.{kind}"].get("role_file", "")
     if not role_file.is_file():
         raise ConfigError(f"missing role file for {kind}: {role_file}")
-    if kind == "notetaker":
-        worker_id = "notetaker"
-        targets = [target for target in targets if not parsed[target].has_section("worker.notetaker")]
-        if not targets:
-            raise ConfigError("notetaker already exists")
+    session = session_config(root)
+    running = set(instances(parsed[session])) if record else set()
+    number = None
+    if explicit or kind == "notetaker":
+        worker_id = value if explicit else "notetaker"
     else:
-        number = next_number(root, kind, parsed.values())
-        worker_id = f"{kind}-{number}"
-        for target in targets:
-            contents[target] = update_option(contents[target], f"type.{kind}", "next_id", number + 1)
+        # --save grows the default team, so it always creates a new instance.
+        returning = [worker for worker in instances(saved, kind)
+                     if worker not in running] if record and not save else []
+        if returning:
+            worker_id = returning[0]
+        else:
+            number = next_number(root, kind, parsed.values())
+            worker_id = f"{kind}-{number}"
+    targets = [target for target in targets if not parsed[target].has_section(f"worker.{worker_id}")]
+    if not targets:
+        raise ConfigError(f"{worker_id} is already in " + ("this session" if record else f"the default team in {path.name}"))
     changed = {}
     for target in targets:
-        changed[target] = with_worker(contents[target], parsed[target], worker_id, kind)
+        text = contents[target]
+        if number is not None:
+            text = update_option(text, f"type.{kind}", "next_id", number + 1)
+        changed[target] = with_worker(text, parsed[target], worker_id, kind)
         resolve(parse_text(changed[target]))
     live = commit_change(root, path, changed, record)
     if live and path in changed:
         print(f"added {worker_id}, launched its pane, and saved it to {path.name}")
+    elif live and saved.has_section(f"worker.{worker_id}"):
+        print(f"added {worker_id} from the default team to this session and launched its pane")
     elif live:
         print(f"added {worker_id} to this session and launched its pane. "
               f"{path.name} is unchanged: add --save to keep it for the next start")
     else:
-        print(f"added {worker_id} to {path.name}" + ("" if record else " (team is stopped)"))
+        print(f"added {worker_id} to the default team in {path.name}. It launches at the next start")
 
 
 def remove_worker(root, path, worker_id, save):
+    record = running_team(root, path)
+    if not record and not save:
+        raise ConfigError(f"no team is running, so there is no session to remove {worker_id} from. "
+                          f"To remove it from the default team in {path.name}, use --save")
     record, targets = change_targets(root, path, save)
     section = f"worker.{worker_id}"
     changed = {}
@@ -504,9 +545,8 @@ def remove_worker(root, path, worker_id, save):
         cp = parse_text(text)
         if not cp.has_section(section):
             continue
-        _, _, rows = resolve(cp)
-        if worker_id != "notetaker" and sum(row[0] not in RESERVED for row in rows) <= 1:
-            raise ConfigError("cannot remove the last regular worker")
+        if len(instances(cp)) <= 1:
+            raise ConfigError("cannot remove the last worker. Stop the team with scripts/teamflow --kill")
         changed[target] = replace_section(text, section, "")
         resolve(parse_text(changed[target]))
     if not changed:
@@ -519,8 +559,35 @@ def remove_worker(root, path, worker_id, save):
         print(f"removed {worker_id} from this session and closed its pane. {path.name} is unchanged"
               + (": add --save to drop it for the next start" if read_config(path).has_section(section) else ""))
     else:
-        print(f"removed {worker_id} from {path.name}" + ("" if record else " (team is stopped)"))
+        print(f"removed {worker_id} from the default team in {path.name}")
     print("conversation, branch, and worktree were preserved")
+
+
+def only_roster(root, path, value):
+    """Print a session roster with a single worker: a default-team instance
+    by ID, the first default-team instance of a type, or a new one."""
+    text = path.read_text()
+    cp = parse_text(text)
+    resolve(cp)
+    if cp.has_section(f"worker.{value}"):
+        worker_id, kind = value, cp[f"worker.{value}"].get("type", "")
+    elif cp.has_section(f"type.{value}") and value != "delegator":
+        kind = value
+        existing = instances(cp, kind)
+        worker_id = existing[0] if existing else ("notetaker" if kind == "notetaker" else "")
+    else:
+        raise ConfigError(f"--only: no worker or type named {value} in {path.name}")
+    for other in instances(cp):
+        if other != worker_id:
+            text = replace_section(text, f"worker.{other}", "")
+    if not worker_id:
+        number = next_number(root, kind, [cp])
+        worker_id = f"{kind}-{number}"
+        text = update_option(text, f"type.{kind}", "next_id", number + 1)
+    if not parse_text(text).has_section(f"worker.{worker_id}"):
+        text = with_worker(text, parse_text(text), worker_id, kind)
+    resolve(parse_text(text))
+    print(text, end="")
 
 
 def sync_session(root, path):
@@ -673,7 +740,7 @@ def worktrees_main(argv):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("command", choices=["parse", "list", "add", "remove", "sync"])
+    parser.add_argument("command", choices=["parse", "list", "add", "remove", "sync", "only"])
     parser.add_argument("config", type=Path)
     parser.add_argument("root", type=Path)
     parser.add_argument("value", nargs="?")
@@ -689,6 +756,10 @@ def main():
         list_workers(args.root, args.config)
     elif args.command == "sync":
         sync_session(args.root, args.config)
+    elif args.command == "only":
+        if not args.value:
+            raise ConfigError("usage: only <config> <root> <worker-or-type>")
+        only_roster(args.root, args.config, args.value)
     elif args.command == "add":
         if not args.value:
             raise ConfigError("usage: workers add <type> [--save]")

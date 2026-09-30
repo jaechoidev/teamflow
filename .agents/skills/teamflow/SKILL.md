@@ -46,8 +46,13 @@ If step 1 started the team, use its printed session name. Otherwise run:
 ./scripts/teamflow start
 ```
 
-Starting the team creates `docs/notes/` and adopts project notes. Follow the
-Delegator role's note workflow for each completed implementation slice.
+Project notes belong to the Notetaker. When it is in the team, starting
+creates `docs/notes/`. Never write notes yourself or create note tasks.
+
+To start a smaller team, `./scripts/teamflow start --only <type-or-id>`
+launches just that worker, for example when the user wants only the
+Notetaker to catch up on waiting notes. Offer this only when the user asks
+for one worker, and add others later with the `teamflow-workers` skill.
 
 Add `--config <file>` when the user names a config. The command prints the
 tmux session name. Tell the user they can watch with
@@ -58,7 +63,8 @@ If giving detach keys, check `tmux show-options -g prefix` and the
 configurations can change the default `Ctrl-B` prefix.
 
 If a team already runs, `start` returns the same session when it uses the
-same config in workers mode. Otherwise it refuses and changes nothing: relay its
+same config in workers mode. It names any default workers missing from the
+session, and the `teamflow-workers` skill can add them. Otherwise it refuses and changes nothing: relay its
 message, and stop a running team with `./scripts/teamflow --kill` only when
 the user says so. `./scripts/teamflow --verify` lists the panes and their
 acknowledgements.
@@ -99,12 +105,14 @@ is busy, check `task status` or `task inbox delegator` about every 100
 seconds, and read the result before you report. Never say a task is done
 before its status is `done`.
 
-After review and integration, release the completed task to the Notetaker.
-The mailbox result starts its investigation, but it checks code, discussion,
-tests, decisions, and sources for the relevant note types. Read its completion
-summary before reporting the slice. The next task is delivered only after it
-finishes the current note pass. Check the Notetaker's pane for a trust prompt
-before releasing the first task.
+After review and integration, release every completed task with
+`task release`. With a Notetaker in the team, the mailbox result starts its
+investigation, and it checks code, discussion, tests, decisions, and sources
+for the relevant note types. Read its completion summary before reporting the
+slice. The next task is delivered only after it finishes the current note
+pass. Check the Notetaker's pane for a trust prompt before releasing the
+first task. Without a Notetaker, `release` says the task waits for one.
+Report the slice without notes.
 
 ## 4. Stop
 
