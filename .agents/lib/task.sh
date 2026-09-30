@@ -76,6 +76,12 @@ cmd="${1:-}"; shift || true
 case "$cmd" in
   new)
     to="${1:?usage: new <to-role> <title>}"; title="${2:?usage: new <to-role> <title>}"
+    # The pane registry holds the team's current roster. A typo or a removed
+    # worker would otherwise get a task that nobody ever takes.
+    if [ "$to" != delegator ] && [ -f "$AGENT_MAILBOX/panes.tsv" ] \
+       && ! awk -F '\t' -v r="$to" '$1 == r { found = 1 } END { exit !found }' "$AGENT_MAILBOX/panes.tsv"; then
+      fail "no worker '$to' in the team roster ($(cut -f1 "$AGENT_MAILBOX/panes.tsv" | grep -vx delegator | paste -sd ' ' -)). Check: scripts/teamflow workers list"
+    fi
     id="$(next_id)" || exit 1
     from="${AGENT_ROLE:-user}"
     { echo "id:      $id"

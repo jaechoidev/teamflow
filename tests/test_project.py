@@ -148,7 +148,8 @@ class ProjectTest(unittest.TestCase):
         worktrees = git("-C", str(project), "worktree", "list")
         self.assertIn(str(project / ".teamflow-worktrees/developer-l-2"), worktrees)
         self.assertFalse((agent / ".teamflow-worktrees").exists())
-        self.assertIn("[worker.developer-l-2]", (project / "teamflow.conf").read_text())
+        self.assertIn("[worker.developer-l-2]", (project / ".git/teamflow/running.conf").read_text())
+        self.assertNotIn("[worker.developer-l-2]", (project / "teamflow.conf").read_text())
 
         again = self.run_tf(agent / "scripts/teamflow", "start", cwd=agent)
         self.assertEqual(again.returncode, 0, again.stderr)

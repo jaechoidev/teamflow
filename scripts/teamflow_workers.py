@@ -110,27 +110,26 @@ def pane_row(worker_id, item, kind="", role_file=""):
     return [valid_field(field, worker_id) for field in fields]
 
 
+def parse_text(content):
+    cp = configparser.ConfigParser(interpolation=None)
+    try:
+        cp.read_string(content)
+    except configparser.Error as exc:
+        raise ConfigError(str(exc)) from exc
+    return cp
+
+
 def atomic_write(path, content):
+    mode = path.stat().st_mode & 0o777 if path.exists() else 0o644
     fd, temp = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as stream:
             stream.write(content)
-        os.chmod(temp, path.stat().st_mode & 0o777)
+        os.chmod(temp, mode)
         os.replace(temp, path)
     finally:
         if os.path.exists(temp):
             os.unlink(temp)
-
-
-def validated_write(path, content):
-    fd, temp = tempfile.mkstemp(prefix=f".{path.name}.check.", dir=path.parent)
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as stream:
-            stream.write(content)
-        resolve(read_config(temp))
-    finally:
-        os.unlink(temp)
-    atomic_write(path, content)
 
 
 def replace_section(content, name, replacement):
@@ -171,6 +170,13 @@ def mailbox_path(root):
     result = subprocess.run(["git", "-C", str(root), "rev-parse", "--path-format=absolute", "--git-common-dir"],
                             capture_output=True, text=True, check=True)
     return Path(result.stdout.strip()) / "teamflow"
+
+
+def session_config(root):
+    """The running team's roster: a copy of the config at start, plus the
+    workers added or removed during the session. The next start begins
+    again from the config."""
+    return mailbox_path(root) / "running.conf"
 
 
 def task_destinations(root):
@@ -263,12 +269,13 @@ def launch_target(session):
     return f"team-{number}", "window"
 
 
-def sync_workers(cp, root, path):
+def sync_workers(root, path, desired):
+    """Make the running team match the roster in desired (config text)."""
     record = running_team(root, path)
     if not record:
         return False
     mailbox = mailbox_path(root)
-    _, zai_env, rows = resolve(cp)
+    _, zai_env, rows = resolve(parse_text(desired))
     if record.get("MODE") == "workers":
         rows = [row for row in rows if row[0] != "delegator"]
     wanted = {row[0] for row in rows}
@@ -280,20 +287,6 @@ def sync_workers(cp, root, path):
     obsolete = {worker: pane for worker, pane in registered.items() if worker not in wanted and pane in all_panes}
     for worker in obsolete:
         guard_removal(root, worker)
-    snapshot = mailbox / "running.conf"
-    if snapshot.exists():
-        old_prefix, old_env, old_rows = resolve(read_config(snapshot))
-        prefix, env, _ = resolve(cp)
-        old_settings = {row[0]: row for row in old_rows}
-        if (prefix, env) != (old_prefix, old_env) or any(
-                row[0] in panes and row[0] in old_settings and row != old_settings[row[0]] for row in rows):
-            raise ConfigError("running worker settings changed. Restart the team to apply model, effort, or role changes")
-    else:
-        for row in rows:
-            if row[0] in panes:
-                saved = read_record(mailbox / "sessions" / row[0])
-                if saved and (saved.get("CLI"), saved.get("MODEL")) != (row[2], row[3]):
-                    raise ConfigError("running worker settings changed. Restart the team to apply them")
     missing = [row for row in rows if row[0] not in panes]
     for worker, _, cli, _, _, _, _, role_file in missing:
         if not shutil.which("claude" if cli == "zai" else cli):
@@ -304,13 +297,17 @@ def sync_workers(cp, root, path):
             raise ConfigError(f"missing z.ai env file: {zai_env}")
         if worker == "notetaker" and not (root / ".agents/lib/note-queue.sh").is_file():
             raise ConfigError("notetaker queue library is missing")
+    # The pane launcher reads a new instance's settings from the session roster.
+    session = session_config(root)
+    previous = session.read_text() if session.exists() else None
+    atomic_write(session, desired)
     launched = []
     try:
         for row in missing:
             worker = row[0]
             target, direction = launch_target(record["SESSION"])
             result = subprocess.run(["bash", str(Path(__file__).with_name("teamflow")),
-                                     "--internal-launch-worker", str(path), str(root), record["SESSION"],
+                                     "--internal-launch-worker", str(session), str(root), record["SESSION"],
                                      worker, target, direction], capture_output=True, text=True)
             pane = result.stdout.strip()
             if result.returncode or not re.fullmatch(r"%[0-9]+", pane):
@@ -327,11 +324,13 @@ def sync_workers(cp, root, path):
                 tmux("kill-pane", "-t", pane)
             except ConfigError:
                 pass
+        if previous is None:
+            session.unlink(missing_ok=True)
+        else:
+            atomic_write(session, previous)
         raise
     try:
         # Publish additions before closing old panes so a retry can find them.
-        if not registry.exists():
-            registry.touch()
         interim = {**registered, **panes}
         atomic_write(registry, "".join(f"{worker}\t{pane}\n" for worker, pane in interim.items()))
         for worker, pane in obsolete.items():
@@ -340,116 +339,196 @@ def sync_workers(cp, root, path):
             old = registered.get(row[0])
             if old and old in all_panes:
                 tmux("kill-pane", "-t", old)
-        # Keep visual pane order aligned with the config, including Notetaker last.
+        # Keep visual pane order aligned with the roster, including Notetaker last.
         positions = tmux("list-panes", "-s", "-t", "=" + record["SESSION"],
                          "-F", "#{window_index} #{pane_index} #{pane_id}").splitlines()
         slots = [parts[2] for parts in sorted((line.split() for line in positions),
                                             key=lambda parts: (int(parts[0]), int(parts[1])))]
         ordered = [panes[row[0]] for row in rows]
         slots = [pane for pane in slots if pane in ordered]
-        for index, desired in enumerate(ordered):
-            if slots[index] != desired:
-                other = slots.index(desired)
-                tmux("swap-pane", "-d", "-s", desired, "-t", slots[index])
+        for index, desired_pane in enumerate(ordered):
+            if slots[index] != desired_pane:
+                other = slots.index(desired_pane)
+                tmux("swap-pane", "-d", "-s", desired_pane, "-t", slots[index])
                 slots[index], slots[other] = slots[other], slots[index]
         for window in tmux("list-windows", "-t", "=" + record["SESSION"], "-F", "#{window_id}").splitlines():
             tmux("select-layout", "-t", window, "tiled")
-        if not registry.exists():
-            registry.touch()
         atomic_write(registry, "".join(f"{row[0]}\t{panes[row[0]]}\n" for row in rows))
-        if not snapshot.exists():
-            snapshot.touch()
-        atomic_write(snapshot, path.read_text())
         record["CONFIG_HASH"] = hashlib.sha256(path.read_bytes()).hexdigest()
         atomic_write(mailbox / "active", "".join(f"{key}={value}\n" for key, value in record.items()))
         if "notetaker" in panes:
             subprocess.run(["bash", str(root / ".agents/lib/note-queue.sh"), "poke"],
                            env={**os.environ, "AGENT_MAILBOX": str(mailbox)}, check=False)
     except (ConfigError, OSError) as exc:
-        raise SyncIncomplete(f"roster update incomplete: {exc}. Config retained, run workers sync to finish") from exc
+        raise SyncIncomplete(f"roster update incomplete: {exc}. Run workers sync to finish") from exc
     return True
 
 
-def apply_change(root, path, content):
+def change_targets(root, path, save):
+    """Files a roster change edits: the session roster while a team runs,
+    the config when the team is stopped or the change is saved."""
+    record = running_team(root, path)
+    targets = []
+    if record:
+        session = session_config(root)
+        if not session.exists():
+            atomic_write(session, path.read_text())  # a team started before session rosters
+        targets.append(session)
+    if save or not record:
+        targets.append(path)
+    return record, targets
+
+
+def commit_change(root, path, contents, record):
     previous = path.read_text()
-    running_team(root, path)  # Reject another active config before writing.
-    validated_write(path, content)
+    if path in contents:
+        atomic_write(path, contents[path])
+    session = session_config(root)
+    if not record or session not in contents:
+        return False
     try:
-        return sync_workers(read_config(path), root, path)
+        return sync_workers(root, path, contents[session])
     except SyncIncomplete:
         raise
     except (ConfigError, OSError):
-        atomic_write(path, previous)
+        if path in contents:
+            atomic_write(path, previous)
         raise
 
 
-def list_workers(cp, root, path):
-    _, _, rows = resolve(cp)
-    record = running_team(root, path)
-    panes = active_panes(root, record) if record else {}
-    configured = {row[0] for row in rows}
-    for worker_id, label, cli, model, _, worktree, kind, _ in rows:
-        if worker_id == "delegator":
-            continue
-        print(f"{worker_id}\t{kind or worker_id}\t{cli}\t{model}\t{worktree}\t{panes.get(worker_id, 'stopped')}")
-    for worker_id, pane in panes.items():
-        if worker_id not in configured and worker_id != "delegator":
-            print(f"{worker_id}\tremoved from config\t\t\t\t{pane}")
-    active = mailbox_path(root) / "active"
-    if active.exists() and panes:
-        digest = hashlib.sha256(path.read_bytes()).hexdigest()
-        if f"CONFIG_HASH={digest}" not in active.read_text():
-            print("saved config differs from the running team. Run workers sync to apply roster changes", file=sys.stderr)
-
-
-def add_worker(cp, root, path, kind):
-    resolve(cp)
-    if not cp.has_section(f"type.{kind}"):
-        raise ConfigError(f"unknown worker type: {kind}")
-    role_file = root / cp[f"type.{kind}"].get("role_file", "")
-    if not role_file.is_file():
-        raise ConfigError(f"missing role file for {kind}: {role_file}")
-    content = path.read_text()
-    if kind == "notetaker":
-        worker_id = "notetaker"
-        if cp.has_section("worker.notetaker"):
-            raise ConfigError("notetaker already exists")
-    else:
-        definition = cp[f"type.{kind}"]
-        current = [int(section.rsplit("-", 1)[1]) for section in sections(cp, "worker.")
-                   if re.fullmatch(r"worker\." + re.escape(kind) + r"-[1-9][0-9]*", section)]
+def next_number(root, kind, configs):
+    """The next instance number of a type. Numbers are never reused: not
+    within a config, and not from instances launched in earlier sessions,
+    whose conversations, worktrees, and branches keep their IDs."""
+    pattern = re.compile(re.escape(kind) + r"-([1-9][0-9]*)")
+    floor, used = 1, set()
+    for cp in configs:
         try:
-            next_id = int(definition.get("next_id", "1"))
+            floor = max(floor, int(cp[f"type.{kind}"].get("next_id", "1")))
         except ValueError as exc:
             raise ConfigError(f"type {kind} has invalid next_id") from exc
-        number = max(next_id, max(current, default=0) + 1)
-        worker_id = f"{kind}-{number}"
-        content = update_option(content, f"type.{kind}", "next_id", number + 1)
+        for section in sections(cp, "worker."):
+            match = pattern.fullmatch(section[7:])
+            if match:
+                used.add(int(match.group(1)))
+    registry = mailbox_path(root) / "sessions"
+    if registry.is_dir():
+        for entry in registry.iterdir():
+            match = pattern.fullmatch(entry.name.split(".", 1)[0])
+            if match:
+                used.add(int(match.group(1)))
+    return max(floor, max(used, default=0) + 1)
+
+
+def with_worker(content, cp, worker_id, kind):
     insertion = f"\n[worker.{worker_id}]\ntype = {kind}\n"
     if cp.has_section("worker.notetaker") and kind != "notetaker":
         match = re.search(r"(?m)^\s*\[worker\.notetaker\]\s*$", content)
         if not match:
             raise ConfigError("cannot locate worker.notetaker section")
-        index = match.start()
-        content = content[:index] + insertion + content[index:]
+        return content[:match.start()] + insertion + content[match.start():]
+    return content.rstrip() + insertion
+
+
+def list_workers(root, path):
+    record = running_team(root, path)
+    saved = read_config(path)
+    session = session_config(root)
+    current = read_config(session) if record and session.exists() else saved
+    _, _, rows = resolve(current)
+    panes = active_panes(root, record) if record else {}
+    in_config = {section[7:] for section in sections(saved, "worker.")}
+    listed = {row[0] for row in rows}
+    for worker_id, label, cli, model, _, worktree, kind, _ in rows:
+        if worker_id == "delegator":
+            continue
+        state = panes.get(worker_id, "stopped")
+        if record and worker_id not in in_config:
+            state += " (session only)"
+        print(f"{worker_id}\t{kind or worker_id}\t{cli}\t{model}\t{worktree}\t{state}")
+    for worker_id, pane in panes.items():
+        if worker_id not in listed and worker_id != "delegator":
+            print(f"{worker_id}\tnot in the roster\t\t\t\t{pane}")
+    if record:
+        for worker_id in sorted(in_config - listed):
+            print(f"{worker_id}\tin {path.name}, not in this session\t\t\t\tstopped")
+        digest = hashlib.sha256(path.read_bytes()).hexdigest()
+        if record.get("CONFIG_HASH", digest) != digest:
+            print(f"{path.name} changed since this team started. It applies at the next start",
+                  file=sys.stderr)
+
+
+def add_worker(root, path, kind, save):
+    record, targets = change_targets(root, path, save)
+    contents = {target: target.read_text() for target in targets}
+    parsed = {target: parse_text(text) for target, text in contents.items()}
+    for target, cp in parsed.items():
+        resolve(cp)
+        if not cp.has_section(f"type.{kind}"):
+            raise ConfigError(f"unknown worker type: {kind}")
+    role_file = root / parsed[targets[0]][f"type.{kind}"].get("role_file", "")
+    if not role_file.is_file():
+        raise ConfigError(f"missing role file for {kind}: {role_file}")
+    if kind == "notetaker":
+        worker_id = "notetaker"
+        targets = [target for target in targets if not parsed[target].has_section("worker.notetaker")]
+        if not targets:
+            raise ConfigError("notetaker already exists")
     else:
-        content = content.rstrip() + insertion
-    live = apply_change(root, path, content)
-    print(f"added {worker_id}" + (" and launched its pane" if live else " to config (team is stopped)"))
+        number = next_number(root, kind, parsed.values())
+        worker_id = f"{kind}-{number}"
+        for target in targets:
+            contents[target] = update_option(contents[target], f"type.{kind}", "next_id", number + 1)
+    changed = {}
+    for target in targets:
+        changed[target] = with_worker(contents[target], parsed[target], worker_id, kind)
+        resolve(parse_text(changed[target]))
+    live = commit_change(root, path, changed, record)
+    if live and path in changed:
+        print(f"added {worker_id}, launched its pane, and saved it to {path.name}")
+    elif live:
+        print(f"added {worker_id} to this session and launched its pane. "
+              f"{path.name} is unchanged: add --save to keep it for the next start")
+    else:
+        print(f"added {worker_id} to {path.name}" + ("" if record else " (team is stopped)"))
 
 
-def remove_worker(cp, root, path, worker_id):
-    _, _, rows = resolve(cp)
+def remove_worker(root, path, worker_id, save):
+    record, targets = change_targets(root, path, save)
     section = f"worker.{worker_id}"
-    if not cp.has_section(section):
-        raise ConfigError(f"worker not found: {worker_id}")
-    if worker_id != "notetaker" and sum(row[0] not in RESERVED for row in rows) <= 1:
-        raise ConfigError("cannot remove the last regular worker")
+    changed = {}
+    for target in targets:
+        text = target.read_text()
+        cp = parse_text(text)
+        if not cp.has_section(section):
+            continue
+        _, _, rows = resolve(cp)
+        if worker_id != "notetaker" and sum(row[0] not in RESERVED for row in rows) <= 1:
+            raise ConfigError("cannot remove the last regular worker")
+        changed[target] = replace_section(text, section, "")
+        resolve(parse_text(changed[target]))
+    if not changed:
+        raise ConfigError(f"worker not found: {worker_id}" + (" in this session" if record and not save else ""))
     guard_removal(root, worker_id)
-    content = replace_section(path.read_text(), section, "")
-    live = apply_change(root, path, content)
-    print(f"removed {worker_id}" + (" and closed its pane" if live else " from config (team is stopped)"))
+    live = commit_change(root, path, changed, record)
+    if live and path in changed:
+        print(f"removed {worker_id}, closed its pane, and removed it from {path.name}")
+    elif live:
+        print(f"removed {worker_id} from this session and closed its pane. {path.name} is unchanged"
+              + (": add --save to drop it for the next start" if read_config(path).has_section(section) else ""))
+    else:
+        print(f"removed {worker_id} from {path.name}" + ("" if record else " (team is stopped)"))
     print("conversation, branch, and worktree were preserved")
+
+
+def sync_session(root, path):
+    record = running_team(root, path)
+    if not record:
+        print(f"team is stopped, {path.name} is ready for the next start")
+        return
+    session = session_config(root)
+    sync_workers(root, path, session.read_text() if session.exists() else path.read_text())
+    print("running panes match the session roster")
 
 
 def main():
@@ -458,6 +537,7 @@ def main():
     parser.add_argument("config", type=Path)
     parser.add_argument("root", type=Path)
     parser.add_argument("value", nargs="?")
+    parser.add_argument("--save", action="store_true")
     args = parser.parse_args()
     cp = read_config(args.config)
     prefix, zai_env, rows = resolve(cp)
@@ -466,17 +546,17 @@ def main():
         for row in rows:
             print(SEP.join(row))
     elif args.command == "list":
-        list_workers(cp, args.root, args.config)
+        list_workers(args.root, args.config)
     elif args.command == "sync":
-        print("running roster synchronized" if sync_workers(cp, args.root, args.config) else "team is stopped, config is ready for next start")
+        sync_session(args.root, args.config)
     elif args.command == "add":
         if not args.value:
-            raise ConfigError("usage: workers add <type>")
-        add_worker(cp, args.root, args.config, args.value)
+            raise ConfigError("usage: workers add <type> [--save]")
+        add_worker(args.root, args.config, args.value, args.save)
     elif args.command == "remove":
         if not args.value:
-            raise ConfigError("usage: workers remove <id>")
-        remove_worker(cp, args.root, args.config, args.value)
+            raise ConfigError("usage: workers remove <id> [--save]")
+        remove_worker(args.root, args.config, args.value, args.save)
 
 
 if __name__ == "__main__":

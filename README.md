@@ -56,7 +56,7 @@ In workers mode, the **Delegator and Planner** runs outside tmux. The
 default config starts these four panes in order:
 
 1. **Researcher** - z.ai GLM (`glm-5.3`, max)
-2. **Reviewer** - Claude (`fable`, max)
+2. **Reviewer** - Claude (`fable`, xhigh)
 3. **Developer L** - Claude (`fable`, max)
 4. **Notetaker** - Claude (`opus`, xhigh), maintaining `docs/notes/`
 
@@ -81,19 +81,29 @@ says exactly what and where to fix it.
 ```
 teamflow workers list
 teamflow workers add developer-m
-teamflow workers add researcher
+teamflow workers add researcher --save
 teamflow workers remove developer-m-1
 teamflow workers sync
 ```
 
+`teamflow.conf` is the default team. While a team runs, `add` and `remove`
+change that session only: adding launches the pane, removing closes it, and
+other workers keep running. The session roster lives in
+`.git/teamflow/running.conf`, so `teamflow.conf` and `git status` stay
+unchanged. After `--kill`, the next start begins from `teamflow.conf` again.
+Add `--save` to also write the change to `teamflow.conf`. When the team is
+stopped, `add` and `remove` edit `teamflow.conf` for the next start.
+`workers list` marks workers that exist in this session only.
+
 Instances have stable numbered IDs for tasks, panes, conversations, worktrees,
-and branches. Removal preserves history and worktrees. It refuses an unfinished
-assigned task and cannot remove the last regular worker. Adding a worker launches
-its pane in the running team. Removing a worker closes its pane immediately.
-Other workers keep running. When the team is stopped, commands update the config
-for the next start. Use `workers sync` after editing roster sections directly.
-Changes to settings of running workers (model, effort, CLI, or role file) require
-a restart. Use `--config <file>` to manage a variant.
+and branches. A number is never reused, including numbers from earlier
+sessions. Removal preserves history and worktrees. It refuses an unfinished
+assigned task and cannot remove the last regular worker. `workers sync` makes
+the running panes match the session roster again, for example after a pane
+died or an interrupted change. Edits to `teamflow.conf` while a team runs
+apply at the next start. Changes to settings of running workers (model,
+effort, CLI, or role file) require a restart. Use `--config <file>` to manage
+a variant.
 
 ## Choosing a config
 

@@ -63,13 +63,15 @@ The launcher resolves each worker into its type settings and instance ID before 
 
 ## Worker management
 
-Add `teamflow workers list|add|remove` with the existing `--config <file>` behavior. The `teamflow-workers` skill calls these commands and explains their results. It does not edit INI text directly.
+Add `teamflow workers list|add|remove|sync` with the existing `--config <file>` behavior. The `teamflow-workers` skill calls these commands and explains their results. It does not edit INI text directly.
 
-- `list` shows the ordered instance IDs, types, CLI and model, worktree policy, and whether each configured instance has a live pane. It also marks a running configuration that differs from the saved file.
-- `add <type>` creates the next unused numbered ID for that type and appends its worker section before the Notetaker. `add notetaker` creates the reserved singleton ID only when absent. It checks that the type exists and reports the new ID. When a team is running, it creates the worktree if needed and launches the pane immediately. Otherwise the next team start creates them.
+- `list` shows the ordered instance IDs, types, CLI and model, worktree policy, and whether each instance has a live pane. While a team runs it lists the session roster and marks instances that exist in this session only.
+- `add <type>` creates the next unused numbered ID for that type, skipping numbers used in earlier sessions, and appends its worker section before the Notetaker. `add notetaker` creates the reserved singleton ID only when absent. It checks that the type exists and reports the new ID. When a team is running, it creates the worktree if needed and launches the pane immediately. Otherwise the next team start creates them.
 - `remove <id>` removes only that worker section. It refuses when the ID has an assigned or in-progress task or when removal would leave no regular worker. Removing the Notetaker also requires an empty note queue. It preserves task records, conversation history, worktrees, and branches. It closes the running pane immediately and retiles the remaining panes.
 
-Commands validate the complete proposed configuration and write it atomically. Add launches a pane in the active session, and remove closes its pane. Unaffected workers keep running. Launch failures restore the config and close newly created panes. If a later runtime operation fails after removal has begun, retain the desired config and report that `workers sync` is needed to finish. Direct roster edits can be applied with `workers sync`. When no team is running, changes apply at the next start.
+`teamflow.conf` is the default team. At start the launcher copies it to the session roster, `.git/teamflow/running.conf`. While a team runs, add and remove edit only the session roster, so the tracked config and `git status` stay unchanged, and the next start begins from the config again. `--save` also writes the change to the config. When no team is running, add and remove edit the config.
+
+Commands validate the complete proposed roster and write it atomically. Add launches a pane in the active session, and remove closes its pane. Unaffected workers keep running. Launch failures restore the session roster and any saved config and close newly created panes. If a later runtime operation fails after removal has begun, keep the new session roster and report that `workers sync` is needed to finish. `workers sync` makes the running panes match the session roster. Config edits made while a team runs apply at the next start.
 
 ## Project setup
 

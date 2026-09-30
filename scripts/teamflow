@@ -12,7 +12,9 @@
 #   scripts/teamflow --check-models  probe configured models (spends a little
 #                                 quota; clean env, zai panes source zai_env)
 #   scripts/teamflow --kill        kill the workspace session
-#   scripts/teamflow workers list|add|remove|sync  manage worker instances
+#   scripts/teamflow workers list|add|remove|sync  manage worker instances. While
+#                                 a team runs, add and remove change this
+#                                 session only. --save also updates the config.
 #
 # Flags:
 #   --config <file>  use this workspace config instead of teamflow.conf (start, up,
@@ -696,17 +698,13 @@ cmd_up() { # $1 attach (1|0)  $2 --config value ('' = default config)  $3 worker
   if [ -n "$ACTIVE_SESSION" ]; then
     [ "$ACTIVE_CONFIG" = "$conf" ] && [ "$ACTIVE_MODE" = "$team_mode" ] \
       || refuse_other_config up "$conf" "$root" "$dconf" "$team_mode"
-    local saved_hash configured_roles running_roles
+    # The running roster may differ from the config: workers added or
+    # removed during the session last until --kill. Config edits made
+    # while the team runs apply at the next start.
+    local saved_hash
     saved_hash="$(team_get "$mailbox" CONFIG_HASH)"
-    if [ -n "$saved_hash" ]; then
-      [ "$saved_hash" = "$(conf_hash "$conf")" ] \
-        || die "config $conf changed while $ACTIVE_SESSION is running; run teamflow --kill, then teamflow start to apply it"
-    else
-      configured_roles="$(printf '%s' "$confout" | tail -n +2 | cut -d "$TSV_SEP" -f1)"
-      [ "$team_mode" = workers ] && configured_roles="$(printf '%s\n' "$configured_roles" | sed '/^delegator$/d')"
-      running_roles="$(cut -f1 "$mailbox/panes.tsv" 2>/dev/null)"
-      [ "$configured_roles" = "$running_roles" ] \
-        || die "configured panes differ from running session $ACTIVE_SESSION; run teamflow --kill, then teamflow start to apply them"
+    if [ -n "$saved_hash" ] && [ "$saved_hash" != "$(conf_hash "$conf")" ]; then
+      say "$conf changed since $ACTIVE_SESSION started. It applies at the next start (teamflow --kill, then teamflow start)"
     fi
     mkdir -p "$root/docs/notes" || die "cannot create project notes at $root/docs/notes"
     sess="$ACTIVE_SESSION"
@@ -978,6 +976,10 @@ cmd_verify() { # $1 --config value ('' = the running team, else the default conf
   local mailbox; mailbox="$(git_common_dir "$root")/$MAILBOX_NAME" || exit $?
   follow_team --verify "$root" "$mailbox" "$1"
   confout="$(team_confout "$root")" || exit $?
+  # A running team reports its session roster, including session-only changes.
+  if [ -n "$ACTIVE_SESSION" ] && [ -f "$mailbox/running.conf" ]; then
+    confout="$(conf_read "$mailbox/running.conf")" || die "cannot parse $mailbox/running.conf"
+  fi
   prefix="$(printf '%s' "$confout" | head -1 | cut -d "$TSV_SEP" -f1)"
   sess="${ACTIVE_SESSION:-$(session_name "$root" "$prefix")}"
   echo "session: $sess ($(tmux has-session -t "=$sess" 2>/dev/null && echo up || echo DOWN))"
@@ -1125,15 +1127,16 @@ cmd_launch_worker() { # config root session worker target split-direction
   return 1
 }
 
-cmd_workers() { # $1 config argument $2 action $3 value
+cmd_workers() { # $1 config argument $2 action $3 value $4 save (1|0)
   local root conf
   root="$(team_root)" || exit $?
   prepare_project "$root"
   follow_team workers "$root" "$(git_common_dir "$root")/$MAILBOX_NAME" "$1"
   conf="$T_CONF"
-  [ -n "$2" ] || die "usage: teamflow workers list|add <type>|remove <id>|sync"
+  [ -n "$2" ] || die "usage: teamflow workers list|add <type> [--save]|remove <id> [--save]|sync"
   local -a args=("$2" "$conf" "$root")
   [ -z "$3" ] || args+=("$3")
+  [ "${4:-0}" = 0 ] || args+=(--save)
   python3 "$TOOL_HOME/scripts/teamflow_workers.py" "${args[@]}"
 }
 
@@ -1149,7 +1152,7 @@ fi
 delegate_to_tool_home "$@"
 unset TEAMFLOW_FROM_PROJECT # keep it out of the panes this run starts
 
-MODE="" NO_ATTACH=0 CONFIG="" CONFIG_GIVEN=0 WORKERS=0 WORKER_ACTION="" WORKER_VALUE=""
+MODE="" NO_ATTACH=0 CONFIG="" CONFIG_GIVEN=0 WORKERS=0 WORKER_ACTION="" WORKER_VALUE="" SAVE=0
 
 pick_mode() {
   [ -z "$MODE" ] || [ "$MODE" = "$1" ] || die "choose one mode: '$MODE' and '$1' cannot be combined"
@@ -1164,6 +1167,7 @@ while [ $# -gt 0 ]; do
       WORKER_ACTION="$1" ;;
     --no-attach) NO_ATTACH=1 ;;
     --workers) WORKERS=1 ;;
+    --save) SAVE=1 ;;
     --config|--config=*)
       [ "$CONFIG_GIVEN" = 0 ] || die "--config given more than once"
       if [ "$1" = "--config" ]; then
@@ -1194,6 +1198,8 @@ MODE="${MODE:-up}"
   || die "--no-attach applies to start or up only, not to $MODE"
 [ "$WORKERS" = 0 ] || [ "$MODE" = up ] || [ "$MODE" = start ] \
   || die "--workers applies to start or up only, not to $MODE (--verify and --kill follow the running team)"
+[ "$SAVE" = 0 ] || { [ "$MODE" = workers ] && { [ "$WORKER_ACTION" = add ] || [ "$WORKER_ACTION" = remove ]; }; } \
+  || die "--save applies to workers add or workers remove only"
 [ "$CONFIG_GIVEN" = 0 ] || [ "$MODE" != init ] \
   || die "--config does not apply to init, which reads no config. Pass it to start, up, --verify, --check-models, or --kill"
 
@@ -1204,5 +1210,5 @@ case "$MODE" in
   --verify)       cmd_verify "$CONFIG" ;;
   --check-models) cmd_check_models "$CONFIG" ;;
   --kill)         cmd_kill "$CONFIG" ;;
-  workers)        cmd_workers "$CONFIG" "$WORKER_ACTION" "$WORKER_VALUE" ;;
+  workers)        cmd_workers "$CONFIG" "$WORKER_ACTION" "$WORKER_VALUE" "$SAVE" ;;
 esac

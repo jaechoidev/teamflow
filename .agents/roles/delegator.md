@@ -50,7 +50,9 @@ and uncertainty.
    `bash "$AGENT_LIB_DIR/task.sh" new <instance-id> '<title>' <<'EOF' ...assignment... EOF`
 3. Deliver it into the worker's pane:
    `bash "$AGENT_LIB_DIR/pane.sh" send-to <instance-id> "Task <id>: <title>. Details: task.sh read <id>"`
-   Then send the full assignment text the same way if the title alone is not enough.
+   Send only this one line. The task record carries the full assignment,
+   and `send-to` presses Enter after every line, so a multi-line message
+   would arrive as separate prompts.
 4. Worker completions arrive only in the mailbox — never as pane text:
    `bash "$AGENT_LIB_DIR/task.sh" inbox delegator` (lists your completed
    dispatches), `status <id>`, `read <id>`. While waiting on a worker,
