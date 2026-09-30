@@ -18,6 +18,10 @@
 #                    One team runs per repo: stop the running session with
 #                    --kill before starting another config.
 #   --no-attach      build detached (up only)
+#   --workers        up only: start the five workers in one column and no
+#                    Delegator pane. The Delegator runs in your own terminal
+#                    and reaches the mailbox through .agents/lib/delegator.sh.
+#                    [pane.delegator] is ignored and may be absent.
 #   -h|--help        show this help
 #
 # Design notes:
@@ -29,8 +33,9 @@
 #   --check-models. Missing configuration is reported, never silently
 #   substituted.
 # - One team per repo: the mailbox and the role worktrees belong to the repo,
-#   not to a config. <mailbox>/active records the running session and the
-#   config that started it. Another config is refused until --kill.
+#   not to a config. <mailbox>/active records the running session, the
+#   config that started it, and its mode (full or workers). Another config
+#   or mode is refused until --kill.
 set -u
 
 TOOL_HOME="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -352,19 +357,23 @@ conf_session() { # $1 team root $2 conf -> session name that config yields ('' i
 
 # find_active <mailbox> <default conf> <session name>...
 # Sets ACTIVE_SESSION and ACTIVE_CONFIG for the team running in this repo
-# (both '' when none runs) and ACTIVE_RECORDED (1 when the launch record
-# vouches for it). A running session under one of the given names without a
-# record was started by a launcher that wrote none. Such a launcher knew
-# the default config only, so that is the config it is attributed to.
+# (both '' when none runs), ACTIVE_MODE (full or workers), and
+# ACTIVE_RECORDED (1 when the launch record vouches for it). A running
+# session under one of the given names without a record was started by a
+# launcher that wrote none. Such a launcher knew the default config and the
+# full team only, so that is what it is attributed to. A record without
+# MODE predates workers mode and is a full team too.
 find_active() {
   local mailbox="$1" dconf="$2" name created
-  ACTIVE_SESSION="" ACTIVE_CONFIG="" ACTIVE_RECORDED=0
+  ACTIVE_SESSION="" ACTIVE_CONFIG="" ACTIVE_RECORDED=0 ACTIVE_MODE=""
   name="$(team_get "$mailbox" SESSION)"
   if [ -n "$name" ]; then
     created="$(session_created "$name")"
     if [ -n "$created" ] && [ "$created" = "$(team_get "$mailbox" CREATED)" ]; then
       ACTIVE_SESSION="$name"
       ACTIVE_CONFIG="$(team_get "$mailbox" CONFIG)"
+      ACTIVE_MODE="$(team_get "$mailbox" MODE)"
+      ACTIVE_MODE="${ACTIVE_MODE:-full}"
       ACTIVE_RECORDED=1
       return 0
     fi
@@ -374,9 +383,20 @@ find_active() {
     if [ -n "$(session_created "$name")" ]; then
       ACTIVE_SESSION="$name"
       ACTIVE_CONFIG="$dconf"
+      ACTIVE_MODE=full
       return 0
     fi
   done
+}
+
+hint_mode() { # $1 team mode -> ' --workers' ('' for the full team)
+  [ "$1" = workers ] && printf ' --workers'
+  return 0
+}
+
+mode_tag() { # $1 team mode -> ' (workers only)' ('' for the full team)
+  [ "$1" = workers ] && printf ' (workers only)'
+  return 0
 }
 
 hint_conf() { # $1 conf $2 team root $3 default conf -> ' --config <path>' ('' for the default)
@@ -384,21 +404,23 @@ hint_conf() { # $1 conf $2 team root $3 default conf -> ' --config <path>' ('' f
   printf ' --config %s' "$(hint_path "$1" "$2")"
 }
 
-# refuse_other_config <mode> <requested conf> <team root> <default conf>
-# The running team was started with another config: explain, change nothing.
+# refuse_other_config <mode> <requested conf> <team root> <default conf> [requested team mode]
+# The running team was started with another config, or in another team
+# mode (full or workers): explain, change nothing.
 refuse_other_config() {
-  local mode="$1" req="$2" root="$3" dconf="$4" running
-  running="${ACTIVE_CONFIG:-unknown}"
+  local mode="$1" req="$2" root="$3" dconf="$4" rmode="${5:-}" running what="config"
+  running="${ACTIVE_CONFIG:-unknown}$(mode_tag "$ACTIVE_MODE")"
   [ "$ACTIVE_RECORDED" = 1 ] || running="$running (no launch record: assumed)"
-  say "session $ACTIVE_SESSION is running with another config. Nothing was changed."
+  [ "$ACTIVE_CONFIG" = "$req" ] && what="mode"
+  say "session $ACTIVE_SESSION is running with another $what. Nothing was changed."
   say "  running:   $running"
-  say "  requested: $req"
-  say "One team runs per repo: the mailbox and the role worktrees are shared. Stop the running session before switching configs."
+  say "  requested: $req$(mode_tag "$rmode")"
+  say "One team runs per repo: the mailbox and the role worktrees are shared. Stop the running session before switching configs or modes."
   case "$mode" in
     up)
       say "  stop it:       scripts/ai-team --kill"
-      say "  then start:    scripts/ai-team up$(hint_conf "$req" "$root" "$dconf")"
-      say "  or go back to the running team: scripts/ai-team up$(hint_conf "$ACTIVE_CONFIG" "$root" "$dconf")"
+      say "  then start:    scripts/ai-team up$(hint_mode "$rmode")$(hint_conf "$req" "$root" "$dconf")"
+      say "  or go back to the running team: scripts/ai-team up$(hint_mode "$ACTIVE_MODE")$(hint_conf "$ACTIVE_CONFIG" "$root" "$dconf")"
       ;;
     *)
       say "  $mode without --config acts on the running team: scripts/ai-team $mode"
@@ -451,6 +473,7 @@ cmd_init() {
   done
   install_file "$src/.agents/lib/task.sh" "$root/.agents/lib/task.sh"
   install_file "$src/.agents/lib/pane.sh" "$root/.agents/lib/pane.sh"
+  install_file "$src/.agents/lib/delegator.sh" "$root/.agents/lib/delegator.sh"
   install_file "$src/.agents/AGENTS-SECTION.md" "$root/.agents/AGENTS-SECTION.md"
   install_file "$src/scripts/ai-team" "$root/scripts/ai-team"
   chmod +x "$root/scripts/ai-team" "$root/.agents/lib/"*.sh
@@ -486,8 +509,9 @@ PY
 
 # ---------- up -----------------------------------------------------------------
 
-cmd_up() { # $1 attach (1|0)  $2 --config value ('' = default config)
-  local mode_attach="$1" conf_arg="$2"
+cmd_up() { # $1 attach (1|0)  $2 --config value ('' = default config)  $3 workers only (1|0)
+  local mode_attach="$1" conf_arg="$2" team_mode=full
+  [ "${3:-0}" = 1 ] && team_mode=workers
 
   command -v tmux >/dev/null 2>&1 || die "tmux not found (brew install tmux / apt install tmux)"
   command -v python3 >/dev/null 2>&1 || die "python3 not found"
@@ -510,14 +534,15 @@ cmd_up() { # $1 attach (1|0)  $2 --config value ('' = default config)
   sess="$(session_name "$root" "$prefix")"
 
   # One team per repo: look for a running team before any side effect. The
-  # config that started it reattaches. Any other config is refused.
+  # config and mode that started it reattach. Anything else is refused.
   local common mailbox dconf
   common="$(git_common_dir "$root")" || exit $?
   mailbox="$common/ai-team"
   dconf="$(default_conf "$root")"
   find_active "$mailbox" "$dconf" "$sess" "$(conf_session "$root" "$dconf")"
   if [ -n "$ACTIVE_SESSION" ]; then
-    [ "$ACTIVE_CONFIG" = "$conf" ] || refuse_other_config up "$conf" "$root" "$dconf"
+    [ "$ACTIVE_CONFIG" = "$conf" ] && [ "$ACTIVE_MODE" = "$team_mode" ] \
+      || refuse_other_config up "$conf" "$root" "$dconf" "$team_mode"
     sess="$ACTIVE_SESSION"
     say "session $sess already running — reattaching (no duplicate launched)"
     [ "$mode_attach" = 1 ] && exec tmux attach-session -t "=$sess"
@@ -528,8 +553,16 @@ cmd_up() { # $1 attach (1|0)  $2 --config value ('' = default config)
   # ---- preflight: config + CLIs (fail before creating anything) -------------
   local tsv roles="" missing=""
   tsv="$(printf '%s' "$confout" | tail -n +2)"
-  [ "$(printf '%s' "$tsv" | grep -c .)" -eq 6 ] \
-    || die "expected 6 [pane.*] sections in $conf ($confdesc), found $(printf '%s' "$tsv" | grep -c .)"
+  if [ "$team_mode" = workers ]; then
+    # The Delegator runs outside tmux: its section is neither checked nor
+    # started, and its registry entry is never touched.
+    tsv="$(printf '%s\n' "$tsv" | awk -F "$TSV_SEP" '$1 != "delegator"')"
+    [ "$(printf '%s' "$tsv" | grep -c .)" -eq 5 ] \
+      || die "expected 5 worker [pane.*] sections (all but delegator) in $conf ($confdesc), found $(printf '%s' "$tsv" | grep -c .)"
+  else
+    [ "$(printf '%s' "$tsv" | grep -c .)" -eq 6 ] \
+      || die "expected 6 [pane.*] sections in $conf ($confdesc), found $(printf '%s' "$tsv" | grep -c .)"
+  fi
 
   while IFS="$TSV_SEP" read -r role label cli model effort worktree; do
     roles="$roles $role"
@@ -720,7 +753,7 @@ EOF
   tmux has-session -t "=$sess" 2>/dev/null \
     || die "pane boot failed: '${order_roles[0]}' exited immediately (session rolled back). Run its pane command by hand to see why — common causes: invalid model id, CLI auth/config error."
   team_write "$mailbox" "SESSION=$sess" "CREATED=$(session_created "$sess")" \
-    "CONFIG=$conf" "ROOT=$root" "STARTED_AT=$(now_utc)"
+    "CONFIG=$conf" "ROOT=$root" "STARTED_AT=$(now_utc)" "MODE=$team_mode"
   local p0 p1 p2 p3 p4 p5
   p0="$(pane_ids_of)"
   tmux rename-window -t "=$sess" "team"
@@ -740,32 +773,61 @@ EOF
     tmux set-environment -u -t "=$sess" "$v" 2>/dev/null
   done
 
-  before="$(pane_ids_of)"
-  tmux split-window -d -h -p 50 -t "$p0" -c "${order_cwds[1]}" "${order_cmds[1]}"
-  p1="$(diff_new_pane "$before")"
+  # pane ids in conf/role order (one per split step): the die message and
+  # the role->pane registry map by role, not by split order. col holds the
+  # five-pane column that gets equal heights.
+  local -a role_pids col
+  if [ "$team_mode" = workers ]; then
+    # Workers mode: no Delegator pane. The five workers fill one full-width
+    # column top to bottom in config order, grown from p0 with the same
+    # 80/75/67/50 cascade as the full team's right column.
+    before="$(pane_ids_of)"
+    tmux split-window -d -v -p 80 -t "$p0" -c "${order_cwds[1]}" "${order_cmds[1]}"
+    p1="$(diff_new_pane "$before")"
 
-  before="$(pane_ids_of)"
-  tmux split-window -d -v -p 80 -t "$p1" -c "${order_cwds[2]}" "${order_cmds[2]}"
-  p2="$(diff_new_pane "$before")"
+    before="$(pane_ids_of)"
+    tmux split-window -d -v -p 75 -t "$p1" -c "${order_cwds[2]}" "${order_cmds[2]}"
+    p2="$(diff_new_pane "$before")"
 
-  before="$(pane_ids_of)"
-  tmux split-window -d -v -p 75 -t "$p2" -c "${order_cwds[3]}" "${order_cmds[3]}"
-  p3="$(diff_new_pane "$before")"
+    before="$(pane_ids_of)"
+    tmux split-window -d -v -p 67 -t "$p2" -c "${order_cwds[3]}" "${order_cmds[3]}"
+    p3="$(diff_new_pane "$before")"
 
-  before="$(pane_ids_of)"
-  tmux split-window -d -v -p 67 -t "$p3" -c "${order_cwds[4]}" "${order_cmds[4]}"
-  p4="$(diff_new_pane "$before")"
+    before="$(pane_ids_of)"
+    tmux split-window -d -v -p 50 -t "$p3" -c "${order_cwds[4]}" "${order_cmds[4]}"
+    p4="$(diff_new_pane "$before")"
+    col=("$p0" "$p1" "$p2" "$p3" "$p4")
+    role_pids=("${col[@]}")
+  else
+    before="$(pane_ids_of)"
+    tmux split-window -d -h -p 50 -t "$p0" -c "${order_cwds[1]}" "${order_cmds[1]}"
+    p1="$(diff_new_pane "$before")"
 
-  before="$(pane_ids_of)"
-  tmux split-window -d -v -p 50 -t "$p4" -c "${order_cwds[5]}" "${order_cmds[5]}"
-  p5="$(diff_new_pane "$before")"
+    before="$(pane_ids_of)"
+    tmux split-window -d -v -p 80 -t "$p1" -c "${order_cwds[2]}" "${order_cmds[2]}"
+    p2="$(diff_new_pane "$before")"
 
-  # Exact equal sizing, grammar-free: resize the top four right panes to a
+    before="$(pane_ids_of)"
+    tmux split-window -d -v -p 75 -t "$p2" -c "${order_cwds[3]}" "${order_cmds[3]}"
+    p3="$(diff_new_pane "$before")"
+
+    before="$(pane_ids_of)"
+    tmux split-window -d -v -p 67 -t "$p3" -c "${order_cwds[4]}" "${order_cmds[4]}"
+    p4="$(diff_new_pane "$before")"
+
+    before="$(pane_ids_of)"
+    tmux split-window -d -v -p 50 -t "$p4" -c "${order_cwds[5]}" "${order_cmds[5]}"
+    p5="$(diff_new_pane "$before")"
+    col=("$p1" "$p2" "$p3" "$p4" "$p5")
+    role_pids=("$p0" "${col[@]}")
+  fi
+
+  # Exact equal sizing, grammar-free: resize the top four column panes to a
   # computed content height; tmux redistributes within the column only.
-  # The pane grid is wh-1 (the border-status line); the five right panes
+  # The pane grid is wh-1 (the border-status line); the five column panes
   # share grid-4 content lines, any remainder spread one line at a time
-  # from the top. The delegator keeps the full grid height. Below a sane
-  # minimum, leave the proportional splits in place.
+  # from the top. In the full team the delegator keeps the full grid
+  # height. Below a sane minimum, leave the proportional splits in place.
   local ww wh grid rbase rrem
   ww=$(tmux display-message -p -t "$p0" '#{window_width}')
   wh=$(tmux display-message -p -t "$p0" '#{window_height}')
@@ -773,15 +835,11 @@ EOF
   if [ "${ww:-0}" -ge 20 ] && [ "$grid" -ge 10 ]; then
     rbase=$(( (grid - 4) / 5 ))
     rrem=$(( (grid - 4) - rbase * 5 ))
-    tmux resize-pane -t "$p1" -y $(( rbase + (rrem > 0 ? 1 : 0) )) 2>/dev/null
-    tmux resize-pane -t "$p2" -y $(( rbase + (rrem > 1 ? 1 : 0) )) 2>/dev/null
-    tmux resize-pane -t "$p3" -y $(( rbase + (rrem > 2 ? 1 : 0) )) 2>/dev/null
-    tmux resize-pane -t "$p4" -y $(( rbase + (rrem > 3 ? 1 : 0) )) 2>/dev/null
+    tmux resize-pane -t "${col[0]}" -y $(( rbase + (rrem > 0 ? 1 : 0) )) 2>/dev/null
+    tmux resize-pane -t "${col[1]}" -y $(( rbase + (rrem > 1 ? 1 : 0) )) 2>/dev/null
+    tmux resize-pane -t "${col[2]}" -y $(( rbase + (rrem > 2 ? 1 : 0) )) 2>/dev/null
+    tmux resize-pane -t "${col[3]}" -y $(( rbase + (rrem > 3 ? 1 : 0) )) 2>/dev/null
   fi
-
-  # pane ids in conf/role order (p0..p5, one per split step): the die
-  # message and the role->pane registry map by role, not by split order
-  local -a role_pids=("$p0" "$p1" "$p2" "$p3" "$p4" "$p5")
   local _pid _i=0
   for _pid in "${role_pids[@]}"; do
     case "$_pid" in
@@ -831,9 +889,13 @@ EOF
 
   say "workspace up: $sess"
   say "config: $conf"
-  say "${order_roles[0]} = pane $p0 (${order_clis[0]}). Workers idle until addressed. Role files are pre-loaded via system prompt (claude/zai) or the startup prompt (codex)."
-  [ "${order_clis[0]}" = codex ] \
-    && say "voice: the Codex CLI has no voice mode; use Codex.app separately if you need voice."
+  if [ "$team_mode" = workers ]; then
+    say "workers only: no Delegator pane. Workers idle until addressed. Run the Delegator in your own terminal and reach the mailbox with: bash .agents/lib/delegator.sh task|pane ..."
+  else
+    say "${order_roles[0]} = pane $p0 (${order_clis[0]}). Workers idle until addressed. Role files are pre-loaded via system prompt (claude/zai) or the startup prompt (codex)."
+    [ "${order_clis[0]}" = codex ] \
+      && say "voice: the Codex CLI has no voice mode; use Codex.app separately if you need voice."
+  fi
   if [ "$mode_attach" = 1 ]; then
     exec tmux attach-session -t "=$sess"
   fi
@@ -863,10 +925,12 @@ cmd_verify() { # $1 --config value ('' = the running team, else the default conf
   sess="${ACTIVE_SESSION:-$(session_name "$root" "$prefix")}"
   echo "session: $sess ($(tmux has-session -t "=$sess" 2>/dev/null && echo up || echo DOWN))"
   echo "config:  ${T_CONF:-none}"
+  [ "$ACTIVE_MODE" = workers ] && echo "mode:    workers only (the Delegator runs outside tmux)"
   while IFS="$TSV_SEP" read -r role label cli model effort worktree; do
     local pid ack="no" alive="gone" ack_time="" bid=""
     pid=$(awk -F '\t' -v r="$role" '$1 == r {print $2; exit}' "$mailbox/panes.tsv" 2>/dev/null)
     [ -n "$pid" ] && tmux list-panes -a -F '#{pane_id}' 2>/dev/null | grep -qx "$pid" && alive="pane $pid"
+    [ "$role" = delegator ] && [ "$ACTIVE_MODE" = workers ] && alive="external"
     # backfill a codex id that boot-time discovery missed (partial boot);
     # same cwd binding as boot-time discovery — never a foreign session
     if [ "$cli" = codex ] && [ "$(reg_get "$mailbox" "$role" STATUS)" = pending ] \
@@ -962,7 +1026,7 @@ cmd_kill() { # $1 --config value ('' = the running team, else the default config
 
 # Mode and flags may come in any order. Everything is parsed and checked
 # before any mode runs, so a mistyped command line has no side effects.
-MODE="" NO_ATTACH=0 CONFIG="" CONFIG_GIVEN=0
+MODE="" NO_ATTACH=0 CONFIG="" CONFIG_GIVEN=0 WORKERS=0
 
 pick_mode() {
   [ -z "$MODE" ] || [ "$MODE" = "$1" ] || die "choose one mode: '$MODE' and '$1' cannot be combined"
@@ -973,6 +1037,7 @@ while [ $# -gt 0 ]; do
   case "$1" in
     init|up|--verify|--check-models|--kill) pick_mode "$1" ;;
     --no-attach) NO_ATTACH=1 ;;
+    --workers) WORKERS=1 ;;
     --config|--config=*)
       [ "$CONFIG_GIVEN" = 0 ] || die "--config given more than once"
       if [ "$1" = "--config" ]; then
@@ -996,12 +1061,14 @@ done
 MODE="${MODE:-up}"
 [ "$NO_ATTACH" = 0 ] || [ "$MODE" = up ] \
   || die "--no-attach applies to up only, not to $MODE"
+[ "$WORKERS" = 0 ] || [ "$MODE" = up ] \
+  || die "--workers applies to up only, not to $MODE (--verify and --kill follow the running team)"
 [ "$CONFIG_GIVEN" = 0 ] || [ "$MODE" != init ] \
   || die "--config does not apply to init, which reads no config. Pass it to up, --verify, --check-models, or --kill"
 
 case "$MODE" in
   init)           cmd_init ;;
-  up)             cmd_up "$((1 - NO_ATTACH))" "$CONFIG" ;;
+  up)             cmd_up "$((1 - NO_ATTACH))" "$CONFIG" "$WORKERS" ;;
   --verify)       cmd_verify "$CONFIG" ;;
   --check-models) cmd_check_models "$CONFIG" ;;
   --kill)         cmd_kill "$CONFIG" ;;

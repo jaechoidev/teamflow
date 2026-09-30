@@ -136,6 +136,43 @@ as `.git/ai-team/sessions/delegator.codex`, and the next launch with
 keep their conversations across the switch. The role table in AGENTS.md
 lists the default CLIs. Roles and routing are the same in every config.
 
+## Workers mode (external Delegator)
+
+Run the Delegator yourself in any terminal, with Codex, Claude, or Claude
+routed to z.ai, and let the launcher start only the five workers:
+
+```
+./scripts/ai-team up --workers --no-attach   # prints the session name
+tmux attach -t <session>                     # watch the workers (optional)
+```
+
+The workers stack top to bottom in one full-width column, with their
+usual models, worktrees, and conversation resume. `[pane.delegator]` is
+ignored and may be left out. No Delegator pane or CLI starts, and nothing
+is typed into your session: results arrive in the mailbox. `--config`,
+`--verify`, and `--kill` work as for the full team. One team runs per
+repo and the mode counts, so `up` and `up --workers` refuse each other
+until `--kill`.
+
+Your session has no `AGENT_*` variables. `.agents/lib/delegator.sh` sets
+them from the repo it belongs to, then runs `task.sh` or `pane.sh`:
+
+```
+bash .agents/lib/delegator.sh task new dev-mid 'Title' <<'EOF'
+...assignment...
+EOF
+bash .agents/lib/delegator.sh pane send-to dev-mid "Task T-0001: Title. Details: task.sh read T-0001"
+bash .agents/lib/delegator.sh task inbox delegator
+bash .agents/lib/delegator.sh task clean 7
+```
+
+It refuses to run inside a worker pane. The portable `ai-team` skill in
+`skills/ai-team/SKILL.md` teaches a Codex or Claude session this
+workflow. It lives in the tool home, and `init` does not copy it. Install
+it once per host by linking or copying `skills/ai-team` into each CLI's
+skills directory, for example `~/.claude/skills/ai-team` and
+`~/.codex/skills/ai-team`.
+
 ## Prerequisites
 
 - macOS or Linux; `tmux`, `python3`, and `git` ≥ 2.31 (the launcher uses
@@ -152,6 +189,8 @@ lists the default CLIs. Roles and routing are the same in every config.
 - **Launch/reattach**: `./scripts/ai-team up` (from anywhere inside the repo)
 - **Another config**: `./scripts/ai-team up --config <file>`, one team at
   a time (see Choosing a config)
+- **Workers only**: `./scripts/ai-team up --workers`, with the Delegator in
+  your own terminal (see Workers mode)
 - **Talk**: type to the Delegator (left pane); it dispatches to workers and
   reports real results. You can also type directly into any worker pane.
 - **Dispatch protocol**: tasks go through the mailbox — the Delegator does
@@ -230,6 +269,9 @@ reviewed work enters main; nothing is pushed without your approval.
 - Repo-root `AGENTS.md` — shared coordination rules (marked section,
   `ai-team init` owns only the markers)
 - `.agents/doc-templates/` - note templates and the project notes workflow
+- `.agents/lib/delegator.sh` - runs `task.sh` and `pane.sh` as the
+  Delegator from outside tmux (workers mode)
+- `skills/ai-team/` (tool home only) - the portable Delegator skill
 
 ## Project notes
 
@@ -321,5 +363,7 @@ idempotence, doc template propagation and conventions, reattach,
 diagnostics, conversation persistence (fresh IDs, resume after kill,
 rollover on missing transcripts, and role isolation), and config
 selection (argument parsing, path resolution, one team per repo,
-conversations across a CLI change, and the Delegator handshake).
+conversations across a CLI change, and the Delegator handshake), and
+workers mode (the five-pane column, dispatch from an external Delegator,
+resume, and one team per repo across modes).
 Tests use stub CLIs and an isolated tmux socket, with no model quota.

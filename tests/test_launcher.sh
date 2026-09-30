@@ -28,7 +28,7 @@ bash "$TOOL/scripts/ai-team" init 2>/dev/null
 # configured delegator effort would leak into the empty-effort case below.
 sed -i '' '/^\[pane\.delegator\]/,/^\[pane\./ s|^effort *=.*|effort =|' ai-team.conf
 for f in ai-team.conf scripts/ai-team .agents/AGENTS-SECTION.md \
-         .agents/lib/task.sh .agents/lib/pane.sh \
+         .agents/lib/task.sh .agents/lib/pane.sh .agents/lib/delegator.sh \
          .agents/roles/delegator.md .agents/roles/dev-junior.md; do
   [ -f "$f" ] && _PASS=$((_PASS+1)) || { echo "FAIL: init missing $f"; _FAIL=$((_FAIL+1)); }
 done
