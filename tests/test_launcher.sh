@@ -5,15 +5,22 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 TOOL="$(cd "$HERE/.." && pwd)"
 command -v tmux >/dev/null 2>&1 || { echo "(tmux missing — skipped)"; finish_tests; exit 0; }
 
-# Runtime stub dir: stub CLIs + a tmux wrapper pinned to an isolated server
-# socket, so the spawned server inherits this shell's PATH (stub CLIs first)
-# and never touches the user's real tmux server.
+# Hermetic from the first line: nothing inherited from an ai-team pane, stub
+# CLI state in scratch dirs before any launch, and a tmux server of our own.
+unset TMUX TMUX_PANE AGENT_ROLE AGENT_ID AGENT_ROLE_FILE AGENT_MAILBOX AGENT_LIB_DIR
+unset STUB_FAIL STUB_FOREIGN_CWD
 REAL_TMUX=$(which -a tmux | head -1)
 STUBS="$(mktemp -d)"
 cp "$HERE/stubs/claude" "$HERE/stubs/codex" "$HERE/stubs/zai-env.sh" "$STUBS/"
 printf '#!/usr/bin/env bash\nexec %q -L ai-team-test "$@"\n' "$REAL_TMUX" > "$STUBS/tmux"
 chmod +x "$STUBS/tmux"
 export PATH="$STUBS:$PATH"
+export STUB_LOG="$STUBS/stub.log"; : > "$STUB_LOG"
+# isolated CLI state dirs: stubs emulate transcript/session storage here, so
+# the suite never touches the real ~/.claude or ~/.codex
+export CLAUDE_CONFIG_DIR="$STUBS/claude-config"
+export CODEX_HOME="$STUBS/codex-home"
+tmux kill-server 2>/dev/null   # a leftover server would carry a stale environment
 
 # --- fixture: a fresh target repo ---------------------------------------------
 TGT="$(mktemp -d)/proj"
@@ -120,11 +127,7 @@ rm .agents/doc-templates/meeting.md
 
 # --- up with stub CLIs ---------------------------------------------------------
 sed -i '' "s|^zai_env = .*|zai_env = $STUBS/zai-env.sh|" ai-team.conf
-export STUB_LOG="$TGT/stub.log"; : > "$STUB_LOG"
-# isolated CLI state dirs: stubs emulate transcript/session storage here, so
-# the suite never touches the real ~/.claude or ~/.codex
-export CLAUDE_CONFIG_DIR="$STUBS/claude-config"
-export CODEX_HOME="$STUBS/codex-home"
+: > "$STUB_LOG"   # log-count assertions below read from a clean log
 
 # inherited z.ai/Anthropic routing vars must not reach claude panes (neither
 # via the shell nor via tmux-global inheritance); zai panes must see exactly

@@ -6,6 +6,16 @@ TOOL="$(cd "$HERE/.." && pwd)"
 PANE="$TOOL/.agents/lib/pane.sh"
 command -v tmux >/dev/null 2>&1 || { echo "(tmux missing — skipped)"; finish_tests; exit 0; }
 
+# Hermetic: nothing inherited from an ai-team pane, and a tmux server of our
+# own: pane.sh and its capture/send must never touch the user's real server.
+unset TMUX TMUX_PANE AGENT_ROLE AGENT_ID AGENT_ROLE_FILE AGENT_LIB_DIR
+REAL_TMUX=$(which -a tmux | head -1)
+STUBS="$(mktemp -d)"
+printf '#!/usr/bin/env bash\nexec %q -L ai-team-test-quote "$@"\n' "$REAL_TMUX" > "$STUBS/tmux"
+chmod +x "$STUBS/tmux"
+export PATH="$STUBS:$PATH"
+tmux kill-server 2>/dev/null
+
 SESS="at-quote-$$"
 MAILBOX="$(mktemp -d)/ai-team"
 export AGENT_MAILBOX="$MAILBOX"
@@ -56,6 +66,6 @@ bash "$PANE" send-to echo "still reachable"
 sleep 0.3
 assert_contains "$(tmux capture-pane -p -t "$PID" -S -10)" "still reachable" "send-to worker still works"
 
-tmux kill-session -t "=$SESS" 2>/dev/null
-rm -rf "$(dirname "$MAILBOX")"
+tmux kill-server 2>/dev/null
+rm -rf "$(dirname "$MAILBOX")" "$STUBS"
 finish_tests
