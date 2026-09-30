@@ -384,15 +384,19 @@ so closing your agent does not leave workers running. Every teamflow command
 the Delegator runs records its agent session in `.git/teamflow/delegator`,
 and a watcher that runs as a tmux background job checks it every 30 seconds:
 
-1. When the Delegator's process is gone, the watcher waits 10 minutes. You
-   may be restarting or resuming the agent, and a new session that runs any
-   teamflow command takes over and cancels the stop.
-2. It then waits while any task is assigned or in progress, or a note is
-   being written, so finished results reach the mailbox. It waits up to
-   2 hours in case a worker hangs.
-3. It stops the team like `--kill`: merged worktrees are removed, and every
-   other worktree is kept. Nothing is discarded, and conversations resume
-   with `teamflow start --last` or `teamflow add`.
+1. When the Delegator's process is gone, the watcher waits one minute. A new
+   session that runs any teamflow command in that minute takes over and
+   cancels the stop.
+2. It then runs `teamflow trim` on every check. Idle workers go, and once
+   every worker is idle the team stops like `--kill`. Busy workers finish
+   their tasks first, so results reach the mailbox, and the Notetaker
+   finishes waiting notes.
+3. If a worker is still busy after 2 hours, in case it hangs, the team stops
+   anyway.
+
+Stopping removes merged worktrees and keeps every other worktree. Nothing is
+discarded, and `teamflow start --last` or `teamflow add` brings the same
+workers back with their conversations.
 
 This works however the agent ends, including a closed terminal, a crash, or
 `kill -9`, which agent exit hooks miss. For Claude Code and similar agents,

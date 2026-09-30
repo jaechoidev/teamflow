@@ -3,23 +3,24 @@
 #
 # scripts/teamflow starts one watcher per team as a tmux background job, so
 # it lives exactly as long as the team's tmux server and opens no window.
-# Every check it looks at <mailbox>/delegator, the agent process that last
-# ran a teamflow command (see delegator.sh). When that process is gone:
-#   1. it waits a grace period, because the user may be restarting or
-#      resuming the agent. A new Delegator that runs any teamflow command
-#      takes over the record and cancels the stop.
-#   2. then it waits while tasks are assigned or in progress, or a note is
-#      being written, so finished results reach the mailbox. A cap bounds
-#      this wait in case a worker hangs.
-#   3. then it stops the team with scripts/teamflow --kill. That removes
-#      merged worktrees and keeps every other worktree. Nothing is discarded.
+# Every check it looks at <mailbox>/delegator, the agent session that last
+# ran a teamflow command (see delegator.sh). When that session is gone:
+#   1. it waits a short grace period, in case the user restarts the agent.
+#      A new Delegator that runs any teamflow command takes over the record
+#      and cancels the stop.
+#   2. then it runs scripts/teamflow trim on every check. Trim removes idle
+#      workers and stops the team, like --kill, once every worker is idle.
+#      Busy workers finish their tasks first, so results reach the mailbox.
+#   3. a cap bounds the wait for busy workers in case one hangs. Then it
+#      stops the team with --kill. Merged worktrees are removed, and every
+#      other worktree is kept. Nothing is discarded.
 # Progress goes to <mailbox>/watch.log.
 #
 # Usage: watch.sh <tmux socket> <session> <session created> <mailbox> <launcher> <root> [grace] [cap] [every]
 set -u
 
 socket="$1" session="$2" created="$3" mailbox="$4" launcher="$5" root="$6"
-grace="${7:-600}" cap="${8:-7200}" every="${9:-30}"
+grace="${7:-60}" cap="${8:-7200}" every="${9:-30}"
 
 tmx() { tmux -S "$socket" "$@"; }
 log() { printf '%s %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*" >> "$mailbox/watch.log"; }
@@ -37,48 +38,46 @@ who() { # how the log names the Delegator
   else printf '%s (pid %s)' "$(field NAME)" "$(field PID)"; fi
 }
 
-busy() { # a task is assigned or in progress, or a note is being written
-  local d
-  [ -f "$mailbox/note-queue/active" ] && return 0
-  for d in "$mailbox"/tasks/T-*; do
-    [ -f "$d/status" ] || continue
-    case "$(cat "$d/status")" in assigned|in-progress) return 0 ;; esac
-  done
-  return 1
+detached() { # run the launcher in its own session, output in <mailbox>/watch.out
+  # Stopping the last session ends the tmux server and its background jobs,
+  # this watcher included. A detached run with its output in a file (not a
+  # pipe) always finishes its worktree cleanup.
+  (cd "$root" && AGENT_ROLE=teamflow-watcher python3 -c \
+    'import os, sys; os.setsid(); os.execvp(sys.argv[1], sys.argv[1:])' \
+    bash "$launcher" "$@") > "$mailbox/watch.out" 2>&1
 }
 
-echo $$ > "$mailbox/watcher"
-log "watching $session for its Delegator (grace ${grace}s, task cap ${cap}s)"
-gone_since="" record="" waiting=0
+# The launcher starts a watcher only when none runs for this very session.
+echo "$$ $created" > "$mailbox/watcher"
+log "watching $session for its Delegator (idle workers stop ${grace}s after it leaves, busy ones within ${cap}s)"
+gone_since="" record="" last=""
 while team_running; do
   if delegator_alive; then
     [ -z "$gone_since" ] || log "Delegator $(who) is back. The stop is cancelled"
-    gone_since="" waiting=0
+    gone_since="" last=""
   else
     now="$(date +%s)"
     current="$(cksum < "$mailbox/delegator" 2>/dev/null)"
     if [ -z "$gone_since" ] || [ "$current" != "$record" ]; then
-      gone_since="$now" record="$current" waiting=0
-      log "Delegator $(who) is gone. The team stops in ${grace}s unless a Delegator returns"
+      gone_since="$now" record="$current" last=""
+      log "Delegator $(who) is gone. Idle workers stop in ${grace}s unless a Delegator returns"
     fi
     away=$((now - gone_since))
-    if [ "$away" -ge "$grace" ]; then
-      if busy && [ "$away" -lt $((grace + cap)) ]; then
-        [ "$waiting" = 1 ] || log "tasks are still in progress. Waiting for them, up to ${cap}s"
-        waiting=1
-      else
-        busy && log "tasks are still in progress after ${cap}s. Stopping anyway"
-        log "stopping the team: no Delegator for ${away}s"
-        # Killing the last session ends the tmux server and its background
-        # jobs, this one included. The stop runs in its own session so its
-        # worktree cleanup always finishes.
-        (cd "$root" && python3 -c 'import os, sys; os.setsid(); os.execvp(sys.argv[1], sys.argv[1:])' \
-          bash "$launcher" --kill) >> "$mailbox/watch.log" 2>&1
-        break
-      fi
+    if [ "$away" -ge $((grace + cap)) ]; then
+      log "workers are still busy after ${cap}s. Stopping the team anyway"
+      detached --kill
+      log "stop: $(paste -sd ' ' - < "$mailbox/watch.out")"
+      break
+    elif [ "$away" -ge "$grace" ]; then
+      # teamflow trim removes idle workers, and stops the team once every
+      # worker is idle. Busy workers finish their tasks first.
+      detached trim
+      out="$(cat "$mailbox/watch.out" 2>/dev/null)"
+      [ "$out" = "$last" ] || log "trim: $(printf '%s' "$out" | paste -sd ' ' -)"
+      last="$out"
     fi
   fi
   sleep "$every"
 done
-[ "$(cat "$mailbox/watcher" 2>/dev/null)" = $$ ] && rm -f "$mailbox/watcher"
+[ "$(cut -d' ' -f1 "$mailbox/watcher" 2>/dev/null)" = $$ ] && rm -f "$mailbox/watcher"
 log "watcher for $session ended"

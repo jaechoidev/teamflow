@@ -49,8 +49,8 @@ Rules:
   released tasks wait for one. Other roles supply evidence in task results.
   Agents may propose memory questions. Only the user writes own-words
   explanations and answers.
-- In workers mode, the team stops itself 10 minutes after the Delegator's
-  agent session ends, once in-progress tasks finish. Unmerged worktrees are
-  kept.
+- In workers mode, a minute after the Delegator's agent session ends, the
+  team trims itself: idle workers stop, busy ones when their tasks finish.
+  Unmerged worktrees are kept.
 - Keep task logs concise; never put secrets in them.
 # <<< teamflow <<<

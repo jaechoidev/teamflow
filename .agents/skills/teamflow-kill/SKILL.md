@@ -6,9 +6,9 @@ description: Stop the running teamflow tmux workspace for the current git reposi
 # Stop teamflow workers
 
 Use this skill only when the user explicitly asks to stop the team. When the
-Delegator's agent session ends, the team also stops by itself after 10
-minutes, once in-progress tasks finish, but that stop cannot ask about
-unmerged worktrees. It keeps them, and this skill decides about them later.
+Delegator's agent session ends, the team also stops by itself about a minute
+later, once its workers are idle, but that stop cannot ask about unmerged
+worktrees. It keeps them, and this skill decides about them later.
 
 1. Find the current repository root with `git rev-parse --show-toplevel` and
    work from there. Check that `scripts/teamflow` exists.
