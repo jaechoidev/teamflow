@@ -10,13 +10,18 @@ Any git repo can adopt it.
 
 ```
 cd /path/to/your-project
-teamflow start
+teamflow init
 ```
 
-The `teamflow` shell alias points to this repo's `scripts/teamflow`. Run
-`teamflow start` from the target folder. If the teamflow scaffold or Git history is
-missing, it runs `init` first. You can run `init` separately to prepare the
-project without launching workers. From this tool home, `init` creates a Git
+Then open your agent (Codex, Claude Code, or another) in the project and ask
+it to start teamflow. Its `teamflow` skill makes that session the Delegator
+and launches the workers in a detached tmux session. `init` itself launches
+nothing, and a bare `teamflow` only prints help.
+
+The `teamflow` shell alias points to this repo's `scripts/teamflow`.
+`teamflow start` from the target folder does both steps from the shell: if
+the teamflow scaffold or Git history is missing, it runs `init` first, then
+launches the workers. From this tool home, `init` creates a Git
 repository when needed. It copies
 `scripts/teamflow`, `scripts/teamflow_workers.py`, `scripts/teamflow_scaffold.py`,
 and `.agents/` (roles, lib, doc templates, AGENTS-SECTION.md), writes
@@ -97,7 +102,8 @@ stopped, `add` and `remove` edit `teamflow.conf` for the next start.
 
 Instances have stable numbered IDs for tasks, panes, conversations, worktrees,
 and branches. A number is never reused, including numbers from earlier
-sessions. Removal preserves history and worktrees. It refuses an unfinished
+sessions. Removal keeps the worker's history, and its worktree stays until
+`--kill` cleans it up (see Stopping and worktrees). It refuses an unfinished
 assigned task and cannot remove the last regular worker. `workers sync` makes
 the running panes match the session roster again, for example after a pane
 died or an interrupted change. Edits to `teamflow.conf` while a team runs
@@ -261,8 +267,9 @@ upgrades).
   (`... tail developer-l-1` shows what's on screen — a CLI may be busy; delivery
   ≠ completion, the mailbox is the source of truth)
 - **Verify panes**: `./scripts/teamflow --verify` (liveness + role acks)
-- **Stop**: `./scripts/teamflow --kill` (session only; worktrees and branches
-  stay, nothing is merged/pushed/deleted)
+- **Stop**: `./scripts/teamflow --kill` (stops the session, removes worktrees
+  whose work is already merged, and lists the rest; see Stopping and
+  worktrees)
 - **Note handoff**: after reading a result and integrating any code, the
   Delegator runs `task.sh release <id> [integrated-commit]`. The Notetaker
   reads the result and underlying evidence, updates notes, and runs
@@ -313,6 +320,31 @@ collision with already-integrated work stops as a conflict you resolve
 deliberately. No role's checkout ever overwrites another's files. Only
 reviewed work enters main; nothing is pushed without your approval.
 
+## Stopping and worktrees
+
+`--kill` stops the tmux session, then looks at each stopped worker's
+worktree. When the worktree has no uncommitted changes and every commit on
+its branch is already in the main checkout's current branch (cherry-picked
+or squash-merged), the worktree and branch are removed. The others are
+listed with what they hold. Decide each one:
+
+```
+./scripts/teamflow worktrees list
+./scripts/teamflow worktrees merge developer-l-1    # commit leftovers, cherry-pick onto the current branch
+./scripts/teamflow worktrees discard developer-l-1  # delete the worktree, branch, and changes
+```
+
+`merge` needs a main checkout without uncommitted changes to tracked files.
+It commits the worktree's uncommitted changes, cherry-picks the branch's
+commits that are not merged yet, then removes the worktree and branch. On a
+conflict it aborts, merges nothing, and keeps the worktree. `discard` cannot
+be undone. Both refuse a worker that is still running. The `teamflow-kill`
+skill asks you which one to use for each kept worktree.
+
+The launcher creates a developer's worktree right before its pane starts,
+at `start` or `workers add`. A new worktree gets a fresh branch from the main
+checkout's current commit. A kept branch is reused, so its work continues.
+
 ## Where things live
 
 - `.agents/roles/*.md` — role instructions (static; injected at launch)
@@ -327,8 +359,8 @@ reviewed work enters main; nothing is pushed without your approval.
 - `.agents/teamflow-manifest` - blob ids of the shipped files as installed,
   so a later refresh can tell unmodified copies from local edits
 - `scripts/teamflow_scaffold.py` - installs, refreshes, and migrates the scaffold
-- `.teamflow-worktrees/<instance-id>` + branches `teamflow/<instance-id>` — developer panes
-  (created only if absent, never reset)
+- `.teamflow-worktrees/<instance-id>` + branches `teamflow/<instance-id>` - developer panes
+  (created when the worker starts, removed by `--kill` once their work is merged)
 - Repo-root `AGENTS.md` — shared coordination rules (marked section,
   `teamflow init` owns only the markers)
 - `.agents/doc-templates/` - note templates and the project notes workflow

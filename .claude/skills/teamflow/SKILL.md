@@ -108,10 +108,8 @@ before releasing the first task.
 
 ## 4. Stop
 
-```
-./scripts/teamflow --kill
-```
-
-This stops the tmux session only. Worktrees, branches, the mailbox, and each
-worker's conversation stay, and the next `start` resumes them. For an
-explicit resume request, use the `teamflow-resume` skill.
+When the user asks to stop the team, follow the `teamflow-kill` skill. It
+stops the tmux session, removes worktrees whose work is already merged, and
+asks the user to merge or discard the rest. The mailbox and each worker's
+conversation stay, and the next `start` resumes them. For an explicit resume
+request, use the `teamflow-resume` skill.

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Resolve teamflow worker types and manage configured instances."""
+"""Resolve teamflow worker types, manage configured instances, and clean up their worktrees."""
 
 import argparse
 import configparser
@@ -313,9 +313,11 @@ def sync_workers(root, path, desired):
             if result.returncode or not re.fullmatch(r"%[0-9]+", pane):
                 raise ConfigError(result.stderr.strip() or f"could not launch {worker}")
             launched.append(pane)
-            time.sleep(0.1)
-            if tmux("display-message", "-p", "-t", pane, "#{pane_dead}") != "0":
-                raise ConfigError(f"{worker} exited during launch")
+            # A CLI that cannot start exits within moments. Watch briefly.
+            for _ in range(5):
+                time.sleep(0.1)
+                if tmux("display-message", "-p", "-t", pane, "#{pane_dead}") != "0":
+                    raise ConfigError(f"{worker} exited during launch")
             panes[worker] = pane
             tmux("select-layout", "-t", pane, "tiled")
     except ConfigError:
@@ -531,6 +533,144 @@ def sync_session(root, path):
     print("running panes match the session roster")
 
 
+def git(cwd, *args, check=True):
+    result = subprocess.run(["git", "-C", str(cwd), *args], capture_output=True, text=True)
+    if check and result.returncode:
+        raise ConfigError(result.stderr.strip() or f"git {args[0]} failed")
+    return result
+
+
+def team_worktrees(root):
+    """Worker worktrees: {instance ID: path} for .teamflow-worktrees/<id> on teamflow/<id>."""
+    base = (root / ".teamflow-worktrees").resolve()
+    found = {}
+    for block in git(root, "worktree", "list", "--porcelain").stdout.strip().split("\n\n"):
+        info = dict(line.split(" ", 1) if " " in line else (line, "") for line in block.splitlines())
+        path = Path(info.get("worktree", ""))
+        if path.parent.resolve() == base and info.get("branch") == f"refs/heads/teamflow/{path.name}":
+            found[path.name] = path
+    return found
+
+
+def head_name(root):
+    return git(root, "symbolic-ref", "--quiet", "--short", "HEAD", check=False).stdout.strip() or "HEAD"
+
+
+def pending_commits(root, worker_id):
+    """Commits on the worker's branch that the main checkout's branch lacks, oldest first."""
+    branch = f"teamflow/{worker_id}"
+    pending = [line.split()[1] for line in git(root, "cherry", "HEAD", branch).stdout.splitlines()
+               if line.startswith("+ ")]
+    if pending:
+        # A squash merge leaves no matching commit. The work counts as
+        # merged when every file the branch changed already matches HEAD.
+        base = git(root, "merge-base", "HEAD", branch).stdout.strip()
+        files = [name for name in git(root, "diff", "--name-only", "-z", base, branch).stdout.split("\0") if name]
+        if not files or git(root, "diff", "--quiet", branch, "HEAD", "--", *files, check=False).returncode == 0:
+            return []
+    return pending
+
+
+def describe(pending, dirty, branch):
+    parts = []
+    if pending:
+        parts.append(f"{len(pending)} commit{'s' if len(pending) != 1 else ''} not in {branch}")
+    if dirty:
+        parts.append(f"{len(dirty)} uncommitted file{'s' if len(dirty) != 1 else ''}")
+    return ", ".join(parts)
+
+
+def remove_worktree(root, worker_id, path, force):
+    git(root, "worktree", "remove", *(["--force", "--force"] if force else []), str(path))
+    git(root, "branch", "-D", f"teamflow/{worker_id}")
+    try:
+        (root / ".teamflow-worktrees").rmdir()
+    except OSError:
+        pass
+
+
+def stopped_worktree(root, worker_id):
+    path = team_worktrees(root).get(worker_id)
+    if not path:
+        raise ConfigError(f"no worktree for {worker_id} under .teamflow-worktrees/")
+    if worker_id in active_panes(root):
+        raise ConfigError(f"{worker_id} is still running. Stop the team with scripts/teamflow --kill "
+                          f"or remove the worker with scripts/teamflow workers remove {worker_id}")
+    return path
+
+
+def clean_worktrees(root):
+    """Remove the worktrees of stopped workers whose work is all in the main
+    checkout's branch. Report the others, which need a merge or discard."""
+    git(root, "worktree", "prune")
+    live, branch = active_panes(root), head_name(root)
+    kept = []
+    for worker_id, path in sorted(team_worktrees(root).items()):
+        if worker_id in live:
+            continue
+        try:
+            pending = pending_commits(root, worker_id)
+            dirty = git(path, "status", "--porcelain").stdout.splitlines()
+            if pending or dirty:
+                kept.append(f"  {worker_id}: {describe(pending, dirty, branch)}")
+                continue
+            remove_worktree(root, worker_id, path, force=False)
+            print(f"removed worktree {worker_id}: its work is already in {branch}")
+        except ConfigError as exc:
+            kept.append(f"  {worker_id}: {exc}")
+    if kept:
+        print(f"kept {len(kept)} worktree{'s' if len(kept) != 1 else ''} with work that is not in {branch}:")
+        print("\n".join(kept))
+        print("merge or discard each: scripts/teamflow worktrees merge <id> | scripts/teamflow worktrees discard <id>")
+
+
+def list_worktrees(root):
+    live, branch = active_panes(root), head_name(root)
+    worktrees = team_worktrees(root)
+    if not worktrees:
+        print("no worker worktrees")
+    for worker_id, path in sorted(worktrees.items()):
+        pending = pending_commits(root, worker_id)
+        dirty = git(path, "status", "--porcelain").stdout.splitlines()
+        state = describe(pending, dirty, branch) or f"all work is in {branch}"
+        print(f"{worker_id}\t{'running' if worker_id in live else 'stopped'}\t{state}")
+
+
+def merge_worktree(root, worker_id):
+    path = stopped_worktree(root, worker_id)
+    branch = head_name(root)
+    if git(root, "status", "--porcelain", "--untracked-files=no").stdout.strip():
+        raise ConfigError(f"the main checkout has uncommitted changes. Commit or stash them before merging {worker_id}")
+    if git(path, "status", "--porcelain").stdout.strip():
+        git(path, "add", "-A")
+        git(path, "commit", "-q", "-m", f"chore(teamflow): keep uncommitted work from {worker_id}")
+    pending = pending_commits(root, worker_id)
+    if pending and git(root, "cherry-pick", *pending, check=False).returncode:
+        git(root, "cherry-pick", "--abort", check=False)
+        raise ConfigError(f"merging {worker_id} into {branch} stopped on a conflict. Nothing was merged, and "
+                          f"its worktree and branch teamflow/{worker_id} were kept. Resolve it by hand with: "
+                          f"git cherry-pick {' '.join(pending)}")
+    remove_worktree(root, worker_id, path, force=False)
+    print(f"merged {len(pending)} commit{'s' if len(pending) != 1 else ''} from {worker_id} into {branch} "
+          f"and removed its worktree and branch")
+
+
+def discard_worktree(root, worker_id):
+    path = stopped_worktree(root, worker_id)
+    remove_worktree(root, worker_id, path, force=True)
+    print(f"discarded {worker_id}: removed its worktree and branch teamflow/{worker_id}")
+
+
+def worktrees_main(argv):
+    actions = {"clean": clean_worktrees, "list": list_worktrees}
+    if len(argv) == 2 and argv[0] in actions:
+        actions[argv[0]](Path(argv[1]))
+    elif len(argv) == 3 and argv[0] in {"merge", "discard"}:
+        (merge_worktree if argv[0] == "merge" else discard_worktree)(Path(argv[1]), argv[2])
+    else:
+        raise ConfigError("usage: worktrees list|clean <root> | worktrees merge|discard <root> <id>")
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("command", choices=["parse", "list", "add", "remove", "sync"])
@@ -561,15 +701,16 @@ def main():
 
 if __name__ == "__main__":
     try:
-        if len(sys.argv) > 1 and sys.argv[1] in {"add", "remove", "sync"}:
-            root_arg = Path(sys.argv[3]) if len(sys.argv) > 3 else Path.cwd()
-            mailbox = mailbox_path(root_arg)
+        # worktrees <action> <root> [id]; the other commands: <command> <config> <root> [id]
+        run = (lambda: worktrees_main(sys.argv[2:])) if sys.argv[1:2] == ["worktrees"] else main
+        if len(sys.argv) > 3 and sys.argv[1] in {"add", "remove", "sync", "worktrees"}:
+            mailbox = mailbox_path(Path(sys.argv[3]))
             mailbox.mkdir(parents=True, exist_ok=True)
             with (mailbox / "workers.lock").open("a") as lock:
                 fcntl.flock(lock, fcntl.LOCK_EX)
-                main()
+                run()
         else:
-            main()
+            run()
     except (ConfigError, OSError, subprocess.CalledProcessError) as exc:
-        print(f"teamflow workers: {exc}", file=sys.stderr)
+        print(f"teamflow {'worktrees' if sys.argv[1:2] == ['worktrees'] else 'workers'}: {exc}", file=sys.stderr)
         sys.exit(1)

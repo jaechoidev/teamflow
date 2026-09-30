@@ -2,6 +2,7 @@
 # teamflow - portable tmux workspace launcher.
 #
 # Modes:
+#   scripts/teamflow               print this help. It launches nothing.
 #   scripts/teamflow init          create a git repo if needed, install or refresh
 #                                 the scaffold, and make the first scaffold
 #                                 commit when the repo has no commits
@@ -11,7 +12,12 @@
 #   scripts/teamflow --verify      show pane liveness + role acknowledgements
 #   scripts/teamflow --check-models  probe configured models (spends a little
 #                                 quota; clean env, zai panes source zai_env)
-#   scripts/teamflow --kill        kill the workspace session
+#   scripts/teamflow --kill        kill the workspace session, then remove stopped
+#                                 workers' worktrees whose work is already merged
+#                                 and list the rest
+#   scripts/teamflow worktrees list|merge <id>|discard <id>  merge a stopped
+#                                 worker's work into the current branch, or
+#                                 discard its worktree, branch, and changes
 #   scripts/teamflow workers list|add|remove|sync  manage worker instances. While
 #                                 a team runs, add and remove change this
 #                                 session only. --save also updates the config.
@@ -1081,7 +1087,22 @@ cmd_kill() { # $1 --config value ('' = the running team, else the default config
   # drop the launch record unless its session is, against all odds, still there
   recorded="$(team_get "$mailbox" SESSION)"
   [ -n "$recorded" ] && [ -n "$(session_created "$recorded")" ] || rm -f "$mailbox/active"
-  say "worktrees and branches are left in place (inspect .teamflow-worktrees/)"
+  # Stopped workers' worktrees whose work is already merged go away. The
+  # rest are listed for a merge or discard decision.
+  python3 "$TOOL_HOME/scripts/teamflow_workers.py" worktrees clean "$root"
+}
+
+cmd_worktrees() { # $1 action (list|merge|discard) $2 instance id
+  local root
+  root="$(team_root)" || exit $?
+  prepare_project "$root"
+  case "${1:-list}" in
+    list) python3 "$TOOL_HOME/scripts/teamflow_workers.py" worktrees list "$root" ;;
+    *)
+      [ -n "$2" ] || die "usage: teamflow worktrees merge <id> | teamflow worktrees discard <id>"
+      python3 "$TOOL_HOME/scripts/teamflow_workers.py" worktrees "$1" "$root" "$2"
+      ;;
+  esac
 }
 
 # Launch one worker in an existing team. The Python manager publishes the registry.
@@ -1161,9 +1182,14 @@ pick_mode() {
 
 while [ $# -gt 0 ]; do
   case "$1" in
-    init|start|up|--verify|--check-models|--kill|workers) pick_mode "$1" ;;
-    list|add|remove|sync)
-      [ "$MODE" = workers ] && [ -z "$WORKER_ACTION" ] || die "unknown argument: $1"
+    init|start|up|--verify|--check-models|--kill|workers|worktrees) pick_mode "$1" ;;
+    list|add|remove|sync|merge|discard)
+      case "$MODE:$1" in
+        workers:list|workers:add|workers:remove|workers:sync) ;;
+        worktrees:list|worktrees:merge|worktrees:discard) ;;
+        *) die "unknown argument: $1" ;;
+      esac
+      [ -z "$WORKER_ACTION" ] || die "unknown argument: $1"
       WORKER_ACTION="$1" ;;
     --no-attach) NO_ATTACH=1 ;;
     --workers) WORKERS=1 ;;
@@ -1184,7 +1210,8 @@ while [ $# -gt 0 ]; do
       ;;
     -h|--help) usage; exit 0 ;;
     *)
-      if [ "$MODE" = workers ] && [ "$WORKER_ACTION" = add -o "$WORKER_ACTION" = remove ] && [ -z "$WORKER_VALUE" ]; then
+      if [ -z "$WORKER_VALUE" ] && case "$MODE:$WORKER_ACTION" in
+           workers:add|workers:remove|worktrees:merge|worktrees:discard) true ;; *) false ;; esac; then
         WORKER_VALUE="$1"
       else
         usage; die "unknown argument: $1"
@@ -1193,13 +1220,21 @@ while [ $# -gt 0 ]; do
   shift
 done
 
-MODE="${MODE:-up}"
+# A bare teamflow launches nothing: new projects run init, then an agent's
+# teamflow skill starts the workers.
+if [ -z "$MODE" ]; then
+  usage
+  [ "$NO_ATTACH$WORKERS$CONFIG_GIVEN$SAVE" = 0000 ] || die "choose a mode, e.g. start or up"
+  exit 0
+fi
 [ "$NO_ATTACH" = 0 ] || [ "$MODE" = up ] || [ "$MODE" = start ] \
   || die "--no-attach applies to start or up only, not to $MODE"
 [ "$WORKERS" = 0 ] || [ "$MODE" = up ] || [ "$MODE" = start ] \
   || die "--workers applies to start or up only, not to $MODE (--verify and --kill follow the running team)"
 [ "$SAVE" = 0 ] || { [ "$MODE" = workers ] && { [ "$WORKER_ACTION" = add ] || [ "$WORKER_ACTION" = remove ]; }; } \
   || die "--save applies to workers add or workers remove only"
+[ "$CONFIG_GIVEN" = 0 ] || [ "$MODE" != worktrees ] \
+  || die "--config does not apply to worktrees, which read no config"
 [ "$CONFIG_GIVEN" = 0 ] || [ "$MODE" != init ] \
   || die "--config does not apply to init, which reads no config. Pass it to start, up, --verify, --check-models, or --kill"
 
@@ -1211,4 +1246,5 @@ case "$MODE" in
   --check-models) cmd_check_models "$CONFIG" ;;
   --kill)         cmd_kill "$CONFIG" ;;
   workers)        cmd_workers "$CONFIG" "$WORKER_ACTION" "$WORKER_VALUE" "$SAVE" ;;
+  worktrees)      cmd_worktrees "$WORKER_ACTION" "$WORKER_VALUE" ;;
 esac
