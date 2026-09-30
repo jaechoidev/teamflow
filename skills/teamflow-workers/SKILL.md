@@ -8,14 +8,14 @@ description: List, add, or remove teamflow worker instances in the current proje
 Work from the target project's Git repository or any linked worktree of it. A named config uses `--config <file>`, with paths resolved from the repository root.
 
 ```
-./scripts/teamflow types
-./scripts/teamflow list
-./scripts/teamflow add <type-or-id> [--save]
-./scripts/teamflow remove <instance-id> [--save]
-./scripts/teamflow sync
+teamflow types
+teamflow list
+teamflow add <type-or-id> [--save]
+teamflow remove <instance-id> [--save]
+teamflow sync
 ```
 
-These are short for `./scripts/teamflow workers list|add|remove|sync`.
+These are short for `teamflow workers list|add|remove|sync`.
 
 `teamflow.conf` holds the worker catalog and an optional default team. `types` lists the catalog: CLI, model, effort, worktree policy, and `use_for`, which says when to pick each type. Each numbered instance has its own mailbox destination, conversation, and optional worktree. Numbers are never reused. The Notetaker is a singleton, and project notes exist only while it is in the team.
 
@@ -23,6 +23,6 @@ While a team runs, add and remove change this session only. Each worker runs in 
 
 When no team is running, `add` starts a team with just that worker, and later adds join it. A plain `remove` refuses, because there is no session to change. `--save` with no team running edits only the default team in `teamflow.conf` and starts nothing. To clear idle workers, use the `teamflow-trim` skill.
 
-After adding a worker, run `bash .agents/lib/delegator.sh pane tail <instance-id>` before giving it a task. A new worktree can open with a Claude Code project trust prompt, and a task sent into that prompt can select `No, exit`. For a workspace the user has authorized, select the displayed trust option in tmux, then check that the CLI is ready.
+After adding a worker, run `teamflow pane tail <instance-id>` before giving it a task. A new worktree can open with a Claude Code project trust prompt, and a task sent into that prompt can select `No, exit`. For a workspace the user has authorized, select the displayed trust option in tmux, then check that the CLI is ready.
 
 After a change, run `list` and report the instance IDs, including any marked `session only`, and the `tmux attach` command it prints for each running worker. If the user also asked to start or resume workers, follow the `teamflow` or `teamflow-resume` skill.

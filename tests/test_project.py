@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Project setup checks: refresh from the tool home, linked worktrees, and
+"""Project setup checks: install, thin projects, linked worktrees, and
 migration from the ai-team names. Stub CLIs and a private tmux server."""
 
 import os
@@ -73,62 +73,63 @@ class ProjectTest(unittest.TestCase):
         return subprocess.run(["bash", str(launcher), *args], cwd=cwd, env=self.env,
                               text=True, capture_output=True)
 
-    def test_project_copy_follows_tool_home(self):
+    def test_install_and_thin_projects(self):
         home = self.make_home()
+        git("-C", str(home), "tag", "-a", "v0.1.0", "-m", "v0.1.0")
+        data, bin_dir = self.base / "data", self.base / "bin"
+        self.env["XDG_DATA_HOME"] = str(self.base)
+        installed = self.run_tf(home / "scripts/teamflow", "install", "--bin-dir", str(bin_dir), cwd=self.base)
+        self.assertEqual(installed.returncode, 0, installed.stderr)
+        tool = bin_dir / "teamflow"
+        self.assertEqual((self.base / "teamflow/current").resolve(), (self.base / "teamflow/v0.1.0").resolve())
+        self.assertEqual((self.base / "teamflow/v0.1.0/version").read_text(), "v0.1.0\n")
+
+        # A new project holds only its config, the stub skills, and AGENTS.md.
         project = self.base / "project"
         project.mkdir()
         (project / "AGENTS.md").write_text("Own notes.\n\n# >>> ai-team >>>\nold\n# <<< ai-team <<<\n")
-        init = self.run_tf(home / "scripts/teamflow", "init", cwd=project)
+        init = self.run_tf(tool, "init", cwd=project)
         self.assertEqual(init.returncode, 0, init.stderr)
+        committed = git("-C", str(project), "show", "--name-only", "--format=", "HEAD").split()
+        stubs = [f"{scope}/skills/{skill}/SKILL.md" for scope in (".agents", ".claude")
+                 for skill in ("teamflow", "teamflow-kill", "teamflow-resume", "teamflow-trim", "teamflow-workers")]
+        self.assertEqual(sorted(committed), sorted(stubs + ["AGENTS.md", "teamflow.conf"]))
+        self.assertIn("teamflow = 0.1.0", (project / "teamflow.conf").read_text())
         agents = (project / "AGENTS.md").read_text()
         self.assertIn("Own notes.", agents)
         self.assertNotIn("ai-team >>>", agents)
-        self.assertEqual(agents.count("# >>> teamflow >>>"), 1)
-        self.assertIn(".agents/teamflow-manifest", git("-C", str(project), "show", "--name-only", "HEAD"))
+        self.assertIn("teamflow guide teamflow", (project / ".claude/skills/teamflow/SKILL.md").read_text())
+        guide = self.run_tf(tool, "guide", "teamflow", cwd=project)
+        self.assertEqual(guide.returncode, 0, guide.stderr)
+        self.assertTrue(guide.stdout.startswith("\n# teamflow Delegator") or "# teamflow Delegator" in guide.stdout)
+        self.assertNotIn("description:", guide.stdout)
+        shown = self.run_tf(tool, "role", "show", "developer", cwd=project)
+        self.assertEqual(shown.stdout, (home / ".agents/roles/developer.md").read_text())
 
-        # A committed tool update replaces unmodified copies. Local edits stay.
-        (project / ".agents/roles/developer.md").write_text("local role\n")
-        for rel in (".agents/lib/task.sh", ".agents/roles/developer.md"):
-            with open(home / rel, "a") as stream:
-                stream.write("# shipped update 1\n")
-        git("-C", str(home), "commit", "-qam", "update")
-        init = self.run_tf(home / "scripts/teamflow", "init", cwd=project)
+        # A project from an older version loses its unmodified copies. An
+        # edited role stays as an override.
+        vendored = self.base / "vendored"
+        for rel in ("scripts", ".agents/lib", ".agents/roles", ".agents/doc-templates"):
+            shutil.copytree(home / rel, vendored / rel)
+        shutil.copy2(home / ".agents/AGENTS-SECTION.md", vendored / ".agents/AGENTS-SECTION.md")
+        for scope in (".agents", ".claude"):
+            shutil.copytree(home / "skills", vendored / scope / "skills")
+        (vendored / "teamflow.conf").write_text(CONFIG)
+        with open(vendored / ".agents/roles/developer.md", "a") as stream:
+            stream.write("Project rule: run the linters.\n")
+        git("init", "-q", "-b", "main", str(vendored))
+        git("-C", str(vendored), "add", "-A")
+        git("-C", str(vendored), "commit", "-qm", "vendored")
+        init = self.run_tf(tool, "init", cwd=vendored)
         self.assertEqual(init.returncode, 0, init.stderr)
-        self.assertEqual((project / ".agents/lib/task.sh").read_text(), (home / ".agents/lib/task.sh").read_text())
-        self.assertEqual((project / ".agents/roles/developer.md").read_text(), "local role\n")
-        self.assertEqual((project / ".agents/roles/developer.md.new").read_text(),
-                         (home / ".agents/roles/developer.md").read_text())
-
-        # An uncommitted tool change followed by another one: the manifest
-        # still recognizes the first as shipped.
-        for mark in ("2", "3"):
-            with open(home / ".agents/lib/task.sh", "a") as stream:
-                stream.write(f"# shipped update {mark}\n")
-            init = self.run_tf(home / "scripts/teamflow", "init", cwd=project)
-            self.assertEqual(init.returncode, 0, init.stderr)
-            self.assertEqual((project / ".agents/lib/task.sh").read_text(),
-                             (home / ".agents/lib/task.sh").read_text())
-
-        # The project's own launcher hands off to the tool home, which
-        # refreshes the project first.
-        for rel in ("scripts/teamflow", ".agents/lib/pane.sh"):
-            with open(home / rel, "a") as stream:
-                stream.write("# shipped update 4\n")
-        listed = self.run_tf(project / "scripts/teamflow", "workers", "list", cwd=project)
-        self.assertEqual(listed.returncode, 0, listed.stderr)
-        self.assertIn("researcher-1", listed.stdout)
-        for rel in ("scripts/teamflow", ".agents/lib/pane.sh"):
-            self.assertEqual((project / rel).read_text(), (home / rel).read_text(), rel)
-
-        # A locally edited project launcher runs as is.
-        with open(project / "scripts/teamflow", "a") as stream:
-            stream.write("# local launcher edit\n")
-        with open(home / "scripts/teamflow", "a") as stream:
-            stream.write("# shipped update 5\n")
-        listed = self.run_tf(project / "scripts/teamflow", "workers", "list", cwd=project)
-        self.assertEqual(listed.returncode, 0, listed.stderr)
-        self.assertIn("has local edits", listed.stderr)
-        self.assertTrue((project / "scripts/teamflow").read_text().endswith("# local launcher edit\n"))
+        self.assertFalse((vendored / "scripts").exists())
+        self.assertFalse((vendored / ".agents/lib").exists())
+        self.assertFalse((vendored / ".agents/doc-templates").exists())
+        self.assertEqual(sorted(p.name for p in (vendored / ".agents/roles").iterdir()), ["developer.md"])
+        self.assertIn("overrides the installed default", init.stderr)
+        self.assertIn("teamflow guide teamflow-kill", (vendored / ".agents/skills/teamflow-kill/SKILL.md").read_text())
+        shown = self.run_tf(tool, "role", "show", "developer", cwd=vendored)
+        self.assertIn("Project rule: run the linters.", shown.stdout)
 
     @unittest.skipUnless(shutil.which("tmux"), "tmux unavailable")
     def test_linked_worktree_acts_on_main_checkout(self):
@@ -142,7 +143,7 @@ class ProjectTest(unittest.TestCase):
         agent = self.base / "agent-worktree"
         git("-C", str(project), "worktree", "add", "-q", "-b", "agent", str(agent))
 
-        added = self.run_tf(agent / "scripts/teamflow", "workers", "add", "developer-l", cwd=agent)
+        added = self.run_tf(home / "scripts/teamflow", "workers", "add", "developer-l", cwd=agent)
         self.assertEqual(added.returncode, 0, added.stderr)
         self.assertIn("developer-l-2", added.stdout)
         worktrees = git("-C", str(project), "worktree", "list")
@@ -151,13 +152,13 @@ class ProjectTest(unittest.TestCase):
         self.assertIn("[worker.developer-l-2]", (project / ".git/teamflow/running.conf").read_text())
         self.assertNotIn("[worker.developer-l-2]", (project / "teamflow.conf").read_text())
 
-        again = self.run_tf(agent / "scripts/teamflow", "start", cwd=agent)
+        again = self.run_tf(home / "scripts/teamflow", "start", cwd=agent)
         self.assertEqual(again.returncode, 0, again.stderr)
         self.assertEqual(again.stdout.strip(), session)
-        self.assertEqual(self.run_tf(project / "scripts/teamflow", "--kill", cwd=project).returncode, 0)
-        restarted = self.run_tf(project / "scripts/teamflow", "start", cwd=project)
+        self.assertEqual(self.run_tf(home / "scripts/teamflow", "--kill", cwd=project).returncode, 0)
+        restarted = self.run_tf(home / "scripts/teamflow", "start", cwd=project)
         self.assertEqual(restarted.returncode, 0, restarted.stderr)
-        self.run_tf(project / "scripts/teamflow", "--kill", cwd=project)
+        self.run_tf(home / "scripts/teamflow", "--kill", cwd=project)
 
     @unittest.skipUnless(shutil.which("tmux"), "tmux unavailable")
     def test_migrates_ai_team_state(self):
@@ -191,13 +192,13 @@ class ProjectTest(unittest.TestCase):
         created = subprocess.run([str(tmux), "list-sessions", "-F", "#{session_created}"],
                                  check=True, capture_output=True, text=True, env=self.env).stdout.strip()
         (legacy / "active").write_text(f"SESSION=legacy\nCREATED={created}\n")
-        refused = self.run_tf(project / "scripts/teamflow", "start", cwd=project)
+        refused = self.run_tf(home / "scripts/teamflow", "start", cwd=project)
         self.assertNotEqual(refused.returncode, 0, refused.stderr)
         self.assertIn("old .git/ai-team state", refused.stderr)
         self.assertTrue((legacy / "tasks/T-0001").is_dir())
         subprocess.run([str(tmux), "kill-session", "-t", "=legacy"], check=True, env=self.env)
 
-        started = self.run_tf(project / "scripts/teamflow", "start", cwd=project)
+        started = self.run_tf(home / "scripts/teamflow", "start", cwd=project)
         self.assertEqual(started.returncode, 0, started.stderr)
         self.assertFalse(legacy.exists())
         self.assertTrue((common / "teamflow/tasks/T-0001/task.md").is_file())
@@ -211,7 +212,7 @@ class ProjectTest(unittest.TestCase):
         self.assertIn("researcher-1 --resume 11111111-1111-4111-8111-111111111111", launched)
         self.assertNotIn("22222222-2222-4222-8222-222222222222", launched)
         self.assertIn("developer-l-1 --session-id", launched)
-        self.run_tf(project / "scripts/teamflow", "--kill", cwd=project)
+        self.run_tf(home / "scripts/teamflow", "--kill", cwd=project)
 
 
 if __name__ == "__main__":

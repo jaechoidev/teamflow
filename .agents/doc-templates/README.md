@@ -29,7 +29,7 @@ this refuse to overwrite an existing note:
 ```
 mkdir -p docs/notes
 ( set -C; sed -e 's|{{title}}|Task mailbox|g' -e "s|{{date}}|$(date +%F)|g" \
-  .agents/doc-templates/concept.md > docs/notes/task-mailbox.md )
+  "$TEAMFLOW_HOME/.agents/doc-templates/concept.md" > docs/notes/task-mailbox.md )
 ```
 
 In a title, put a backslash before any `&`, `|`, or `\`. Copying a

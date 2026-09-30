@@ -15,10 +15,18 @@ import tempfile
 import time
 
 SEP = "\x1f"
+TOOL_HOME = Path(__file__).resolve().parents[1]
+NOTE_QUEUE = TOOL_HOME / ".agents/lib/note-queue.sh"
 SLUG = re.compile(r"^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$")
 
 class ConfigError(Exception):
     pass
+
+
+def role_path(root, role_file):
+    """A role file in the project overrides the installed default."""
+    project = Path(root) / role_file
+    return project if project.is_file() else TOOL_HOME / role_file
 
 
 class SyncIncomplete(ConfigError):
@@ -265,12 +273,12 @@ def sync_workers(root, path, desired):
     for worker, _, cli, _, _, _, _, role_file in missing:
         if not shutil.which("claude" if cli == "zai" else cli):
             raise ConfigError(f"required CLI not on PATH: {cli}")
-        if role_file and not (root / role_file).is_file():
+        if role_file and not role_path(root, role_file).is_file():
             raise ConfigError(f"missing role file: {role_file}")
         if cli == "zai" and not Path(zai_env).expanduser().is_file():
             raise ConfigError(f"missing z.ai env file: {zai_env}")
-        if worker == "notetaker" and not (root / ".agents/lib/note-queue.sh").is_file():
-            raise ConfigError("notetaker queue library is missing")
+        if worker == "notetaker" and not NOTE_QUEUE.is_file():
+            raise ConfigError(f"notetaker queue library is missing from {NOTE_QUEUE.parent}")
     if any(row[0] == "notetaker" for row in missing):
         (root / "docs/notes").mkdir(parents=True, exist_ok=True)  # notes arrive with the notetaker
     # The pane launcher reads a new instance's settings from the session roster.
@@ -319,7 +327,7 @@ def sync_workers(root, path, desired):
         record["CONFIG_HASH"] = hashlib.sha256(path.read_bytes()).hexdigest()
         atomic_write(mailbox / "active", "".join(f"{key}={value}\n" for key, value in record.items()))
         if "notetaker" in panes:
-            subprocess.run(["bash", str(root / ".agents/lib/note-queue.sh"), "poke"],
+            subprocess.run(["bash", str(NOTE_QUEUE), "poke"],
                            env={**os.environ, "AGENT_MAILBOX": str(mailbox)}, check=False)
     except (ConfigError, OSError) as exc:
         raise SyncIncomplete(f"roster update incomplete: {exc}. Run workers sync to finish") from exc
@@ -493,7 +501,7 @@ def add_worker(root, path, value, save):
         resolve(cp)
         if not cp.has_section(f"type.{kind}"):
             raise ConfigError(f"unknown worker type: {kind}")
-    role_file = root / parsed[targets[0]][f"type.{kind}"].get("role_file", "")
+    role_file = role_path(root, parsed[targets[0]][f"type.{kind}"].get("role_file", ""))
     if not role_file.is_file():
         raise ConfigError(f"missing role file for {kind}: {role_file}")
     session = session_config(root)

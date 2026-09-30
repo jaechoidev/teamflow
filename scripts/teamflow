@@ -1,36 +1,47 @@
 #!/usr/bin/env bash
-# teamflow - portable tmux workspace launcher.
+# teamflow - cross-vendor subagents for any coding agent, in tmux.
 #
-# Modes:
-#   scripts/teamflow               print this help. It launches nothing.
-#   scripts/teamflow init          create a git repo if needed, install or refresh
-#                                 the scaffold, and make the first scaffold
-#                                 commit when the repo has no commits
-#   scripts/teamflow start         initialize the project if needed, then launch
-#                                 configured worker panes detached
-#   scripts/teamflow up            launch (resumes role conversations) or reattach
-#   scripts/teamflow --verify      show pane liveness + role acknowledgements
-#   scripts/teamflow --check-models  probe configured models (spends a little
-#                                 quota; clean env, zai panes source zai_env)
-#   scripts/teamflow --kill        kill the workspace session, then remove stopped
-#                                 workers' worktrees whose work is already merged
-#                                 and list the rest
-#   scripts/teamflow worktrees list|merge <id>|discard <id>  merge a stopped
-#                                 worker's work into the current branch, or
-#                                 discard its worktree, branch, and changes
-#   scripts/teamflow types         list the worker types the config offers
-#   scripts/teamflow add <type-or-id>  add a worker to this session. With no
-#                                 team running, it starts one with that worker
-#   scripts/teamflow remove <id>   remove a worker from this session
-#   scripts/teamflow list|sync     show the roster, or repair the running windows
+# Install (once per machine, from a clone of https://github.com/jaechoidev/teamflow):
+#   scripts/teamflow install [--dev]  copy this checkout to
+#                                 ~/.local/share/teamflow/<version> and link
+#                                 ~/.local/bin/teamflow to it. --dev runs the
+#                                 checkout itself, for developing teamflow
+#   teamflow update               git pull the recorded checkout and reinstall
+#   teamflow version | doctor     show the install, or check what teamflow needs
+#
+# In a project:
+#   teamflow                      print this help. It launches nothing.
+#   teamflow init                 set the project up: teamflow.conf, stub skills,
+#                                 and the AGENTS.md section. Creates a git repo
+#                                 and a first commit when needed
+#   teamflow start                start the default team, detached
+#   teamflow up                   start the default team, or reattach, and attach
+#   teamflow types                list the worker types the config offers
+#   teamflow add <type-or-id>     add a worker to this session. With no team
+#                                 running, it starts one with that worker
+#   teamflow remove <id>          remove a worker from this session
+#   teamflow list|sync            show the roster, or repair the running windows
 #                                 (add, remove, list, and sync are short for
 #                                 workers add|remove|list|sync. --save on add or
 #                                 remove also updates the default team)
-#   scripts/teamflow trim          remove idle workers. When every worker is
+#   teamflow trim                 remove idle workers. When every worker is
 #                                 idle, stop the team like --kill
-#   scripts/teamflow view [<id>...]  gather these workers (default: all running)
+#   teamflow view [<id>...]       gather these workers (default: all running)
 #                                 into one tiled window named view. --close
 #                                 puts each back in its own window
+#   teamflow task|pane ...        the Delegator's mailbox and window commands
+#   teamflow guide <skill>|notes  print the full instructions of a skill
+#   teamflow role show|edit <role>  print the role in effect, or copy the
+#                                 default into the project to customize it
+#   teamflow --verify             show worker windows, acknowledgements, the
+#                                 Delegator, and the watcher
+#   teamflow --check-models       probe configured models (spends a little quota)
+#   teamflow --kill               stop the team, then remove stopped workers'
+#                                 worktrees whose work is already merged and
+#                                 list the rest
+#   teamflow worktrees list|merge <id>|discard <id>  merge a stopped worker's
+#                                 work into the current branch, or discard its
+#                                 worktree, branch, and changes
 #
 # Flags:
 #   --config <file>  use this workspace config instead of teamflow.conf (start, up,
@@ -47,23 +58,34 @@
 #   -h|--help        show this help
 #
 # Design notes:
-# - Everything is derived from the CURRENT repo (git rev-parse); no
-#   user-specific absolute paths are embedded. API keys never appear here:
-#   z.ai panes source the env file named in teamflow.conf ([workspace] zai_env).
+# - The installed tool holds the code, default roles, templates, and full
+#   skill text. A project holds only teamflow.conf, stub skills, the AGENTS.md
+#   section, and roles it customized. A running team keeps the exact version
+#   it started with. API keys never appear here: z.ai types source the env
+#   file named in teamflow.conf ([workspace] zai_env).
 # - Model availability: binary presence is checked always; whether a MODEL id
 #   actually works for your account is only knowable live — use
 #   --check-models. Missing configuration is reported, never silently
 #   substituted.
 # - One team per repo: the mailbox and the role worktrees belong to the repo,
 #   not to a config. <mailbox>/active records the running session, the
-#   config that started it, and its mode (full or workers). Another config
-#   or mode is refused until --kill.
-# - One version per team: run from the tool home, start, up, and workers
-#   refresh the project's unmodified copies of the shipped files and record
-#   the tool home. The project's own copy then hands each call to it.
+#   config that started it, and the install that runs it. Another config is
+#   refused until --kill.
 set -u
 
-TOOL_HOME="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# TOOL_HOME is the installed version directory (or the checkout, for a
+# development install). ~/.local/bin/teamflow is a link, so follow links
+# first, and resolve the `current` link too: a running team keeps the exact
+# version it started with even after an update switches `current`.
+self_path="${BASH_SOURCE[0]}"
+while [ -L "$self_path" ]; do
+  self_dir="$(cd "$(dirname "$self_path")" && pwd)"
+  self_path="$(readlink "$self_path")"
+  case "$self_path" in /*) ;; *) self_path="$self_dir/$self_path" ;; esac
+done
+TOOL_HOME="$(cd "$(dirname "$self_path")/.." && pwd -P)"
+TOOL_LIB="$TOOL_HOME/.agents/lib"
+TEAMFLOW_DATA="${XDG_DATA_HOME:-$HOME/.local/share}/teamflow"
 MAILBOX_NAME=teamflow # the mailbox lives at <git-common-dir>/teamflow
 
 die() { echo "teamflow: $*" >&2; exit 1; }
@@ -130,8 +152,7 @@ resolve_conf() { # $1 team root  $2 --config value ('' = default) -> config path
   command -v python3 >/dev/null 2>&1 || die "python3 not found"
   if [ -z "$arg" ]; then
     p="$root/teamflow.conf"
-    [ -f "$p" ] || p="$TOOL_HOME/teamflow.conf"
-    [ -f "$p" ] || die "no teamflow.conf (run: scripts/teamflow init)"
+    [ -f "$p" ] || die "no teamflow.conf in $root. Set this project up with: teamflow init"
   else
     # Relative paths resolve from the repo root, never from the current
     # directory: the same spelling names the same file from a subdirectory
@@ -204,16 +225,23 @@ worker_window() { # $1 pane id: a worker's window keeps its ID as its name,
   tmux set-window-option -t "$1" monitor-activity on >/dev/null
 }
 
+role_path() { # $1 root $2 role file (relative) -> the project's override, else the installed default
+  if [ -f "$1/$2" ]; then printf '%s\n' "$1/$2"; else printf '%s\n' "$TOOL_HOME/$2"; fi
+}
+
+tool_version() { # the installed version, or the checkout's git description
+  if [ -f "$TOOL_HOME/version" ]; then head -1 "$TOOL_HOME/version"
+  else git -C "$TOOL_HOME" describe --tags --always --dirty 2>/dev/null || echo unknown; fi
+}
+
 note_delegator() { # $1 root: record the calling agent session as the Delegator
   case "${AGENT_ROLE:-}" in ""|delegator) ;; *) return 0 ;; esac
-  [ -f "$1/.agents/lib/delegator.sh" ] || return 0
-  bash "$1/.agents/lib/delegator.sh" register 2>/dev/null
+  (cd "$1" && bash "$TOOL_LIB/delegator.sh" register) 2>/dev/null
   return 0
 }
 
 start_watcher() { # $1 mailbox $2 root $3 session: one watcher per team (see .agents/lib/watch.sh)
   local mailbox="$1" root="$2" sess="$3" pid watched socket cmd arg
-  [ -f "$root/.agents/lib/watch.sh" ] || return 0
   # A watcher of an earlier session may still be finishing. Only a live
   # watcher of this very session counts.
   read -r pid watched 2>/dev/null < "$mailbox/watcher"
@@ -224,7 +252,7 @@ start_watcher() { # $1 mailbox $2 root $3 session: one watcher per team (see .ag
   socket="$(tmux display-message -p -t "=$sess:" '#{socket_path}')" || return 0
   cmd="bash"
   # TEAMFLOW_WATCH_GRACE, _CAP, _EVERY, _FAST, and _SLOW (seconds) exist for tests only.
-  for arg in "$root/.agents/lib/watch.sh" "$socket" "$sess" "$(session_created "$sess")" "$mailbox" \
+  for arg in "$TOOL_LIB/watch.sh" "$socket" "$sess" "$(session_created "$sess")" "$mailbox" \
       "$TOOL_HOME/scripts/teamflow" "$root" "${TEAMFLOW_WATCH_GRACE:-60}" \
       "${TEAMFLOW_WATCH_CAP:-7200}" "${TEAMFLOW_WATCH_EVERY:-60}" \
       "${TEAMFLOW_WATCH_FAST:-600}" "${TEAMFLOW_WATCH_SLOW:-3600}"; do
@@ -254,49 +282,28 @@ show_stop_note() { # $1 mailbox
   return 0
 }
 
-install_scaffold() { # $1 root -> installed project paths on stdout
-  # Unmodified copies follow the tool home. Local edits win, and the shipped
-  # copy is staged as <file>.new (see scripts/teamflow_scaffold.py).
-  python3 "$TOOL_HOME/scripts/teamflow_scaffold.py" install "$TOOL_HOME" "$1"
+history_source() { # the teamflow checkout whose history identifies files older versions copied
+  if git -C "$TOOL_HOME" rev-parse --git-dir >/dev/null 2>&1; then printf '%s\n' "$TOOL_HOME"
+  else head -1 "$TEAMFLOW_DATA/source" 2>/dev/null; fi
+}
+
+is_tool_source() { # $1 root: the project is teamflow's own checkout
+  path_eq "$1" "$TOOL_HOME" || path_eq "$1" "$(head -1 "$TEAMFLOW_DATA/source" 2>/dev/null)"
 }
 
 # prepare_project <root>: before a mode acts on a project, move state left
-# by older versions (the ai-team names). From the tool home, also refresh
-# the project's unmodified copies and remember this tool home, so the
-# project's own scripts/teamflow hands later calls to it. Runs once.
+# by older versions (the ai-team names), and point out teamflow files that
+# older versions copied into the project. Runs once.
 PREPARED=""
 prepare_project() {
   local root="$1" common
   [ "$PREPARED" = "$root" ] && return 0
   common="$(git_common_dir "$root")" || exit $?
   python3 "$TOOL_HOME/scripts/teamflow_scaffold.py" migrate "$root" "$common" || exit 1
-  if ! path_eq "$root" "$TOOL_HOME" && [ -f "$root/scripts/teamflow" ]; then
-    install_scaffold "$root" >/dev/null || exit 1
-    mkdir -p "$common/$MAILBOX_NAME" || die "cannot create mailbox at $common/$MAILBOX_NAME"
-    printf '%s\n' "$TOOL_HOME" > "$common/$MAILBOX_NAME/tool-home"
+  if [ -f "$root/scripts/teamflow" ] && ! is_tool_source "$root"; then
+    say "this project still has teamflow files that older versions copied in. Remove them with: teamflow init"
   fi
   PREPARED="$root"
-}
-
-# A project's own scripts/teamflow hands every call to the tool home that
-# installed it, while that copy is unmodified. The teamflow command, the
-# skills, and ./scripts/teamflow then run one version against one team.
-delegate_to_tool_home() { # "$@" = the original arguments
-  local common own home
-  [ -z "${TEAMFLOW_FROM_PROJECT:-}" ] || return 0
-  common="$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null)" || return 0
-  # Only a copy inside this repository (any of its checkouts) hands off.
-  own="$(git -C "$TOOL_HOME" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)" || return 0
-  path_eq "$own" "$common" || return 0
-  home="$(head -1 "$common/$MAILBOX_NAME/tool-home" 2>/dev/null)"
-  [ -n "$home" ] && ! path_eq "$home" "$TOOL_HOME" \
-    && [ -f "$home/scripts/teamflow" ] && [ -f "$home/scripts/teamflow_scaffold.py" ] || return 0
-  if ! cmp -s "$home/scripts/teamflow" "$TOOL_HOME/scripts/teamflow" \
-     && ! python3 "$home/scripts/teamflow_scaffold.py" pristine "$home" "$TOOL_HOME" scripts/teamflow; then
-    say "scripts/teamflow has local edits, so it runs as is instead of the copy in $home"
-    return 0
-  fi
-  TEAMFLOW_FROM_PROJECT=1 exec bash "$home/scripts/teamflow" "$@"
 }
 
 # ---------- per-role conversation registry ---------------------------------------
@@ -445,7 +452,6 @@ session_created() { # $1 session name -> creation stamp ('' when not running)
 
 default_conf() { # $1 team root -> default config path ('' when there is none)
   local p="$1/teamflow.conf"
-  [ -f "$p" ] || p="$TOOL_HOME/teamflow.conf"
   [ -f "$p" ] || return 0
   abs_path "$p"
 }
@@ -565,7 +571,7 @@ follow_team() {
 # ---------- init ---------------------------------------------------------------
 
 cmd_init() {
-  local root common installed path bootstrap=0
+  local root common stub_paths path bootstrap=0 running
   if git rev-parse --show-toplevel >/dev/null 2>&1; then
     root="$(team_root)" || exit $?
   else
@@ -577,32 +583,38 @@ cmd_init() {
   common="$(git_common_dir "$root")" || exit $?
   python3 "$TOOL_HOME/scripts/teamflow_scaffold.py" migrate "$root" "$common" || exit 1
 
+  # Files older versions copied into the project leave, unless edited. A
+  # team started from those copies must stop first: its windows run them.
+  if [ -f "$root/scripts/teamflow" ] && ! is_tool_source "$root"; then
+    running="$(team_get "$common/$MAILBOX_NAME" SESSION)"
+    if [ -n "$running" ] && [ -n "$(session_created "$running")" ] \
+       && [ -z "$(team_get "$common/$MAILBOX_NAME" TOOL)" ]; then
+      die "session $running runs from teamflow files copied into this project. Stop it with: teamflow --kill, then run teamflow init again"
+    fi
+    python3 "$TOOL_HOME/scripts/teamflow_scaffold.py" unvendor "$TOOL_HOME" "$(history_source)" "$root" || exit 1
+  fi
+
   local -a scaffold=(teamflow.conf AGENTS.md)
-  installed="$(install_scaffold "$root")" || exit 1
+  stub_paths="$(python3 "$TOOL_HOME/scripts/teamflow_scaffold.py" stubs "$TOOL_HOME" "$(history_source)" "$root")" || exit 1
   while IFS= read -r path; do
     [ -n "$path" ] && scaffold+=("$path")
   done <<EOF
-$installed
+$stub_paths
 EOF
 
   python3 "$TOOL_HOME/scripts/teamflow_scaffold.py" drop-pane-delegator "$root/teamflow.conf" || exit 1
   if [ ! -e "$root/teamflow.conf" ]; then
     cp "$TOOL_HOME/teamflow.conf" "$root/teamflow.conf"
-    say "wrote teamflow.conf (user-owned: edit worker types and instances here; init never overwrites it)"
-  else
-    say "teamflow.conf already present, left untouched"
-    if ! grep -q '^\[worker\.notetaker\]' "$root/teamflow.conf"; then
-      say "add a Notetaker section from $TOOL_HOME/teamflow.conf to enable the note queue"
-    fi
+    say "wrote teamflow.conf: the worker catalog and default team, owned by this project"
   fi
+  python3 "$TOOL_HOME/scripts/teamflow_scaffold.py" set-version "$root/teamflow.conf" "$(tool_version)" || exit 1
 
   # AGENTS.md marked section: replace if present, else append; never touch
   # anything outside the markers. Older versions marked it ai-team.
-  python3 - "$root" <<'PY'
+  python3 - "$TOOL_HOME/.agents/AGENTS-SECTION.md" "$root/AGENTS.md" <<'PY'
 import sys, os, re
-root = sys.argv[1]
-section = open(os.path.join(root, ".agents/AGENTS-SECTION.md")).read()
-ag = os.path.join(root, "AGENTS.md")
+section = open(sys.argv[1]).read()
+ag = sys.argv[2]
 old = open(ag).read() if os.path.exists(ag) else ""
 s = re.sub(r"\n?# >>> (?:teamflow|ai-team) >>>.*?# <<< (?:teamflow|ai-team) <<<\n?", "\n", old, flags=re.S)
 s = s.rstrip("\n") + ("\n\n" if s.strip() else "") + section.rstrip("\n") + "\n"
@@ -611,21 +623,17 @@ if s != old:
 PY
 
   ensure_exclude "$common" ".teamflow-worktrees/"
-  if ! path_eq "$root" "$TOOL_HOME"; then
-    mkdir -p "$common/$MAILBOX_NAME" || die "cannot create mailbox at $common/$MAILBOX_NAME"
-    printf '%s\n' "$TOOL_HOME" > "$common/$MAILBOX_NAME/tool-home"
-  fi
   PREPARED="$root"
 
-  say "initialized in $root"
+  say "initialized in $root (teamflow $(tool_version) from $TOOL_HOME)"
   if [ "$bootstrap" = 1 ]; then
     git -C "$root" add -- "${scaffold[@]}" \
-      || die "could not stage the teamflow scaffold; finish the first commit manually"
+      || die "could not stage the teamflow files; finish the first commit manually"
     git -C "$root" commit --only -m 'chore: initialize teamflow' -- "${scaffold[@]}" \
-      || die "could not commit the teamflow scaffold; finish the first commit manually"
-    say "created first commit with teamflow scaffold only"
+      || die "could not commit the teamflow files; finish the first commit manually"
+    say "created first commit with the teamflow files only"
   fi
-  echo "next: edit teamflow.conf if needed, then run ./scripts/teamflow start" >&2
+  say "next: open your agent here and use the teamflow skill"
 }
 
 # ---------- start --------------------------------------------------------------
@@ -635,9 +643,7 @@ cmd_start() { # $1 --config value ('' = default config)  $2 --only value  $3 --l
   if git rev-parse --show-toplevel >/dev/null 2>&1; then
     root="$(team_root)" || exit $?
   fi
-  if [ -z "$root" ] || [ ! -f "$root/scripts/teamflow" ] \
-     || [ ! -f "$root/.agents/lib/delegator.sh" ] \
-     || [ ! -f "$root/teamflow.conf" ] \
+  if [ -z "$root" ] || [ ! -f "$root/teamflow.conf" ] \
      || ! git -C "$root" rev-parse --verify HEAD >/dev/null 2>&1; then
     cmd_init
   fi
@@ -654,7 +660,7 @@ pane_cmd() { # role cli model effort cwd rolefile sid mode type -> pane shell co
   # export (a shell builtin) rather than the env binary: the zai pane starts
   # with `.` (source), which env cannot execute.
   envs="export AGENT_ROLE=$(shell_quote "$prole") AGENT_WORKER_TYPE=$(shell_quote "$ptype") AGENT_ID=$(shell_quote "$sess-$prole") \
-AGENT_ROLE_FILE=$qfile AGENT_MAILBOX=$qmailbox AGENT_LIB_DIR=$qlib;"
+AGENT_ROLE_FILE=$qfile AGENT_MAILBOX=$qmailbox AGENT_LIB_DIR=$qlib TEAMFLOW_HOME=$(shell_quote "$TOOL_HOME");"
   local base="" bin
   sflag="--session-id"
   [ "$pmode" = resume ] && sflag="--resume"
@@ -730,11 +736,9 @@ prepare_worker() {
   [ "$mode" = fresh ] && reg+=(STARTED_AT="$(now_utc)" SNAPSHOT="$snap")
   reg_write "$mailbox" "$role" "${reg[@]}"
 
-  local resolved_role_file="$root/.agents/roles/$role.md"
-  [ -n "$role_file" ] && resolved_role_file="$root/$role_file"
-  if [ -z "$role_file" ] && [ ! -f "$resolved_role_file" ]; then
-    resolved_role_file="$TOOL_HOME/.agents/roles/$role.md"
-  fi
+  # A role file in the project overrides the installed default.
+  local resolved_role_file
+  resolved_role_file="$(role_path "$root" "${role_file:-.agents/roles/$role.md}")"
   worker_command="$(pane_cmd "$role" "$cli" "$model" "$effort" "$cwd" "$resolved_role_file" "$sid" "$mode" "$worker_type")"
 }
 
@@ -820,8 +824,7 @@ cmd_up() { # $1 attach (1|0)  $2 --config value ('' = default config)  $3 worker
   if [ -n "$note_tsv" ]; then
     [ "$(printf '%s\n' "$tsv" | tail -1 | cut -d "$TSV_SEP" -f1)" = notetaker ] \
       || die "Notetaker must be last in $conf"
-    [ -f "$root/.agents/lib/note-queue.sh" ] \
-      || die "notetaker queue missing; run teamflow init to install .agents/lib/note-queue.sh"
+    [ -f "$TOOL_LIB/note-queue.sh" ] || die "notetaker queue missing from $TOOL_LIB. Reinstall teamflow"
   fi
   worker_count="$(printf '%s\n' "$tsv" | grep -c .)"
   [ "$worker_count" -gt 0 ] \
@@ -829,7 +832,8 @@ cmd_up() { # $1 attach (1|0)  $2 --config value ('' = default config)  $3 worker
 
   while IFS="$TSV_SEP" read -r role label cli model effort worktree worker_type role_file; do
     if [ -n "$role_file" ]; then
-      [ -f "$root/$role_file" ] || die "[$role] role file missing: $root/$role_file"
+      [ -f "$(role_path "$root" "$role_file")" ] \
+        || die "[$role] role file missing: $role_file, in the project or in $TOOL_HOME"
     fi
     roles="$roles $role"
     [ -n "$cli" ] || die "[$role] cli is empty in $conf"
@@ -889,8 +893,7 @@ $tsv
 EOF
 
   # ---- pane command builder ---------------------------------------------------
-  local lib_dir="$root/.agents/lib"
-  [ -d "$lib_dir" ] || lib_dir="$TOOL_HOME/.agents/lib"
+  local lib_dir="$TOOL_LIB"
 
 
   # ---- build the tmux session -------------------------------------------------
@@ -928,7 +931,8 @@ EOF
   tmux has-session -t "=$sess" 2>/dev/null || \
     die "pane boot failed: '${order_roles[0]}' exited immediately (session rolled back)"
   team_write "$mailbox" "SESSION=$sess" "CREATED=$(session_created "$sess")" \
-    "CONFIG=$conf" "CONFIG_HASH=$(conf_hash "$conf")" "ROOT=$root" "STARTED_AT=$(now_utc)" "MODE=$team_mode"
+    "CONFIG=$conf" "CONFIG_HASH=$(conf_hash "$conf")" "ROOT=$root" "STARTED_AT=$(now_utc)" "MODE=$team_mode" \
+    "TOOL=$TOOL_HOME" "VERSION=$(tool_version)"
   if [ "$roster" != "$conf" ]; then
     mv "$roster" "$mailbox/running.conf" || boot_fail "cannot save the session roster"
   else
@@ -997,7 +1001,7 @@ EOF
   # startup resume leaves the task queued in that case. Poke once now, after
   # registry publication, without duplicating an already active task.
   if [ -n "$note_tsv" ]; then
-    AGENT_MAILBOX="$mailbox" bash "$root/.agents/lib/note-queue.sh" poke
+    AGENT_MAILBOX="$mailbox" bash "$TOOL_LIB/note-queue.sh" poke
   fi
 
   note_delegator "$root"
@@ -1007,7 +1011,7 @@ EOF
   show_stop_note "$mailbox"
   rm -f "$mailbox/stopped"
   say "config: $conf"
-  say "one window per worker. Workers idle until addressed. The Delegator runs in your own agent session and reaches the mailbox with: bash .agents/lib/delegator.sh task|pane ..."
+  say "one window per worker. Workers idle until addressed. The Delegator runs in your own agent session and reaches the mailbox with: teamflow task|pane ..."
   if [ "$mode_attach" = 1 ]; then
     exec tmux attach-session -t "=$sess"
   fi
@@ -1023,7 +1027,8 @@ team_confout() {
     [ -f "$T_CONF" ] || die "config file not found: $T_CONF (session $ACTIVE_SESSION was started with it)"
     conf_read "$T_CONF" || die "cannot parse $T_CONF"
   else
-    conf_read "${T_CONF:-$1/teamflow.conf}" 2>/dev/null || conf_read "$TOOL_HOME/teamflow.conf"
+    [ -n "$T_CONF" ] || die "no teamflow.conf in $1. Set this project up with: teamflow init"
+    conf_read "$T_CONF" || die "cannot parse $T_CONF"
   fi
 }
 
@@ -1049,7 +1054,7 @@ cmd_verify() { # $1 --config value ('' = the running team, else the default conf
     dname="$(grep '^NAME=' "$mailbox/delegator" 2>/dev/null | cut -d= -f2-)"
     dkind="$(grep '^KIND=' "$mailbox/delegator" 2>/dev/null | cut -d= -f2)"
     dstate=gone
-    bash "$root/.agents/lib/delegator.sh" alive 2>/dev/null && dstate=present
+    (cd "$root" && bash "$TOOL_LIB/delegator.sh" alive) 2>/dev/null && dstate=present
     wpid="$(cut -d' ' -f1 "$mailbox/watcher" 2>/dev/null)"
     if [ "$dkind" = codex ]; then
       echo "delegator: Codex, any Codex session in this project ($dstate)"
@@ -1215,7 +1220,7 @@ cmd_launch_worker() { # config root session worker -> the new window's pane id
   local conf="$1" root="$2" sess="$3" wanted="$4"
   local mailbox lib_dir wt_root zai_env CODEX_BIN CLAUDE_BIN
   mailbox="$(git_common_dir "$root")/$MAILBOX_NAME"
-  lib_dir="$root/.agents/lib"
+  lib_dir="$TOOL_LIB"
   wt_root="$root/.teamflow-worktrees"
   CODEX_BIN="$(command -v codex)"
   CLAUDE_BIN="$(command -v claude)"
@@ -1270,6 +1275,119 @@ cmd_workers() { # $1 config argument $2 action $3 value $4 save (1|0)
   python3 "$TOOL_HOME/scripts/teamflow_workers.py" "${args[@]}"
 }
 
+# ---------- install, update, and tool commands -----------------------------------
+
+cmd_install() { # $1 dev (1|0) $2 bin dir
+  git -C "$TOOL_HOME" rev-parse --git-dir >/dev/null 2>&1 \
+    || die "install runs from a teamflow checkout, and this is an installed copy ($TOOL_HOME). Use teamflow update, or run scripts/teamflow install in a clone of https://github.com/jaechoidev/teamflow"
+  python3 "$TOOL_HOME/scripts/teamflow_scaffold.py" install-tool "$TOOL_HOME" "$TEAMFLOW_DATA" "$2" "$1" || exit 1
+  bash "$TEAMFLOW_DATA/current/scripts/teamflow" doctor || true
+}
+
+cmd_update() { # pull the recorded checkout and install from it
+  local source dev=0
+  source="$(head -1 "$TEAMFLOW_DATA/source" 2>/dev/null)"
+  [ -n "$source" ] && [ -d "$source" ] || die "no recorded checkout to update from. Run scripts/teamflow install in a clone of https://github.com/jaechoidev/teamflow"
+  path_eq "$(cd "$TEAMFLOW_DATA/current" 2>/dev/null && pwd -P)" "$source" && dev=1
+  git -C "$source" pull --ff-only || die "git pull failed in $source. Update it by hand, then run: $source/scripts/teamflow install"
+  bash "$source/scripts/teamflow" install $([ "$dev" = 1 ] && echo --dev)
+}
+
+cmd_version() {
+  echo "teamflow $(tool_version)"
+  echo "running from: $TOOL_HOME"
+  [ -f "$TEAMFLOW_DATA/source" ] && echo "installed from: $(head -1 "$TEAMFLOW_DATA/source")"
+  return 0
+}
+
+version_at_least() { # $1 have $2 need (x.y.z, a leading v allowed) -> exit 0 when have >= need
+  python3 - "$1" "$2" <<'PY'
+import re, sys
+def parse(v):
+    m = re.match(r"v?(\d+)\.(\d+)\.(\d+)", v)
+    return tuple(map(int, m.groups())) if m else None
+have, need = parse(sys.argv[1]), parse(sys.argv[2])
+sys.exit(0 if have is None or need is None or have >= need else 1)
+PY
+}
+
+cmd_doctor() {
+  local bad=0 v root conf need cli
+  ok() { printf '  ok       %s\n' "$*"; }
+  miss() { printf '  MISSING  %s\n' "$*"; bad=1; }
+  echo "teamflow $(tool_version) at $TOOL_HOME"
+  if command -v tmux >/dev/null 2>&1; then
+    v="$(tmux -V | sed 's/[^0-9.]//g')"
+    version_at_least "$v.0" 3.2.0 && ok "tmux $v" || miss "tmux 3.2 or newer (found $v): brew install tmux / apt install tmux"
+  else miss "tmux: brew install tmux / apt install tmux"; fi
+  v="$(git --version | awk '{print $3}')"
+  version_at_least "$v" 2.31.0 && ok "git $v" || miss "git 2.31 or newer (found $v)"
+  v="$(python3 -c 'import sys; print("%d.%d.0" % sys.version_info[:2])' 2>/dev/null)"
+  [ -n "$v" ] && version_at_least "$v" 3.8.0 && ok "python3 ${v%.0}" || miss "python3 3.8 or newer"
+  if command -v teamflow >/dev/null 2>&1; then
+    ok "teamflow on PATH: $(command -v teamflow)"
+  else
+    miss "teamflow on PATH: run scripts/teamflow install from a teamflow checkout, and make sure its bin directory is on PATH"
+  fi
+  if root="$(git rev-parse --show-toplevel 2>/dev/null)"; then
+    root="$(team_root)"
+    conf="$root/teamflow.conf"
+    if [ -f "$conf" ]; then
+      ok "project $root"
+      need="$(sed -n 's/^teamflow *= *//p' "$conf" | head -1)"
+      if [ -n "$need" ]; then
+        version_at_least "$(tool_version)" "$need" && ok "project needs teamflow $need" \
+          || miss "project needs teamflow $need or later: run teamflow update"
+      fi
+      for cli in $(conf_read "$conf" 2>/dev/null | tail -n +2 | cut -d "$TSV_SEP" -f3 | sort -u); do
+        case "$cli" in
+          zai) command -v claude >/dev/null 2>&1 && ok "claude (for zai types)" || miss "claude CLI (zai types run it)" ;;
+          *) command -v "$cli" >/dev/null 2>&1 && ok "$cli" || miss "$cli CLI, used by a type in teamflow.conf" ;;
+        esac
+      done
+      [ -f "$root/.claude/skills/teamflow/SKILL.md" ] && [ -f "$root/.agents/skills/teamflow/SKILL.md" ] \
+        && ok "skills in .claude/skills and .agents/skills" || miss "project skills: run teamflow init"
+      [ ! -f "$root/scripts/teamflow" ] || is_tool_source "$root" \
+        || miss "no copied teamflow files: this project still has them. Run teamflow init"
+    else
+      echo "  (not a teamflow project: run teamflow init here to set it up)"
+    fi
+  fi
+  return "$bad"
+}
+
+cmd_guide() { # $1 skill name or notes: print its full instructions
+  local name="${1:-}" file
+  case "$name" in
+    "") echo "usage: teamflow guide <skill> | notes"; ls "$TOOL_HOME/skills" | sed 's/^/  /'; echo "  notes"; return 0 ;;
+    notes) file="$TOOL_HOME/.agents/doc-templates/README.md" ;;
+    *) file="$TOOL_HOME/skills/$name/SKILL.md" ;;
+  esac
+  [ -f "$file" ] || die "no guide named $name. See: teamflow guide"
+  # Print the instructions without the skill's frontmatter.
+  awk 'NR == 1 && /^---$/ { front = 1; next } front && /^---$/ { front = 0; next } !front' "$file"
+}
+
+cmd_role() { # role show|edit <name>: print the role in effect, or copy the default in to edit
+  local action="${1:-}" name="${2:-}" root rel
+  case "$action" in show|edit) ;; *) name="" ;; esac
+  [ -n "$name" ] || die "usage: teamflow role show|edit <role>  (roles: $(ls "$TOOL_HOME/.agents/roles" | sed 's/\.md$//' | paste -sd ' ' -))"
+  root="$(team_root)" || exit $?
+  rel=".agents/roles/$name.md"
+  if [ "$action" = show ]; then
+    [ -f "$(role_path "$root" "$rel")" ] || die "no role named $name"
+    cat "$(role_path "$root" "$rel")"
+    return 0
+  fi
+  [ -f "$TOOL_HOME/$rel" ] || die "no role named $name in $TOOL_HOME/.agents/roles"
+  if [ -f "$root/$rel" ]; then
+    say "$rel already exists in this project. Edit it there"
+  else
+    mkdir -p "$root/.agents/roles" && cp "$TOOL_HOME/$rel" "$root/$rel"
+    say "copied the default $name role to $rel. Edit it there: it overrides the installed default for new windows"
+  fi
+}
+
 # ---------- main -----------------------------------------------------------------
 
 # Mode and flags may come in any order. Everything is parsed and checked
@@ -1279,8 +1397,28 @@ if [ "${1:-}" = --internal-launch-worker ]; then
   cmd_launch_worker "$@"
   exit $?
 fi
-delegate_to_tool_home "$@"
-unset TEAMFLOW_FROM_PROJECT # keep it out of the panes this run starts
+# These take their own arguments, passed through untouched.
+case "${1:-}" in
+  task|pane) tool="$1"; shift; exec bash "$TOOL_LIB/delegator.sh" "$tool" "$@" ;;
+  guide) shift; cmd_guide "$@"; exit $? ;;
+  role) shift; cmd_role "$@"; exit $? ;;
+  version|--version) cmd_version; exit 0 ;;
+  doctor) cmd_doctor; exit $? ;;
+  update) cmd_update; exit $? ;;
+  install)
+    shift
+    dev=0 bin_dir="$HOME/.local/bin"
+    while [ $# -gt 0 ]; do
+      case "$1" in
+        --dev) dev=1 ;;
+        --bin-dir) [ $# -ge 2 ] || die "--bin-dir requires a directory"; shift; bin_dir="$1" ;;
+        --bin-dir=*) bin_dir="${1#--bin-dir=}" ;;
+        *) die "usage: teamflow install [--dev] [--bin-dir <dir>]" ;;
+      esac
+      shift
+    done
+    cmd_install "$dev" "$bin_dir"; exit $? ;;
+esac
 
 MODE="" NO_ATTACH=0 CONFIG="" CONFIG_GIVEN=0 WORKERS=0 WORKER_ACTION="" WORKER_VALUE="" SAVE=0 ONLY="" LAST=0 CLOSE=0
 VIEW_IDS=()

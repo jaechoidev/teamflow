@@ -14,6 +14,30 @@ Compared with built-in subagents, workers can come from any vendor, persist,
 and stay visible. The cost is weight: teamflow needs tmux, each vendor's CLI
 and login, and results arrive asynchronously.
 
+## Install
+
+Once per machine, from a clone of this repository:
+
+```
+git clone https://github.com/jaechoidev/teamflow ~/code/teamflow
+~/code/teamflow/scripts/teamflow install
+teamflow doctor
+```
+
+`install` copies the checkout to `~/.local/share/teamflow/<version>`, points
+`~/.local/share/teamflow/current` at it, and links `~/.local/bin/teamflow` to
+its launcher, so every shell and every agent finds `teamflow` on `PATH`.
+`<version>` is the checkout's `git describe --tags`, for example `v0.1.0`.
+`install --dev` points `current` at the checkout itself, so edits apply at
+once while you work on teamflow. `teamflow update` runs `git pull` in the
+recorded checkout and installs again. `teamflow version` shows what is
+installed, and `teamflow doctor` checks tmux 3.2+, git 2.31+, Python 3.8+,
+the command on `PATH`, and, inside a project, the agent CLIs its config uses.
+
+A running team keeps the version it started with. An update applies at the
+team's next start. Earlier versions stay in `~/.local/share/teamflow/`, so you
+can point `current` back at one.
+
 ## Quickstart
 
 ```
@@ -34,31 +58,48 @@ project and use the `teamflow` skill in one of two ways:
 Watch the workers with `tmux attach -t <session>`, one window per worker.
 A bare `teamflow` in the shell only prints help.
 
-The `teamflow` shell alias points to this repo's `scripts/teamflow`.
-`teamflow start` from the target folder starts the default team from the
-shell, running `init` first when the scaffold or Git history is missing.
-From this tool home, `init` creates a Git repository when needed. It copies
-`scripts/teamflow`, `scripts/teamflow_workers.py`, `scripts/teamflow_scaffold.py`,
-and `.agents/` (roles, lib, doc templates, AGENTS-SECTION.md), writes
-`teamflow.conf` only when absent, and updates only the marked AGENTS.md
-section. If the repository has no commit, `init`
-makes a first commit containing only the teamflow scaffold. Existing staged
-or untracked project files stay outside that commit. Existing repositories
-with a commit are never committed by `init`. The first commit gives the
-launcher a HEAD for developer worktrees.
+`init` creates a Git repository when needed, writes `teamflow.conf` only when
+absent, writes the stub skills, and updates only the marked `AGENTS.md`
+section. If the repository has no commit, `init` makes a first commit
+containing only those files. Existing staged or untracked project files stay
+outside that commit, and repositories with a commit are never committed by
+`init`. `teamflow start` starts the default team from the shell, running
+`init` first when the project is not set up.
 
-## Updates and upgrades
+## What a project holds
 
-One version of teamflow drives a team. When the tool home runs `init`,
-`start`, `up`, or `workers` for a project, it first refreshes the project's
-copies of the shipped files. A copy is replaced only while it is unmodified:
-it matches the version recorded in `.agents/teamflow-manifest` or any
-version committed in the tool home. A locally edited copy is kept, and the
-shipped version lands next to it as `<file>.new` for review. The tool home
-also records itself in `.git/teamflow/tool-home`. From then on the project's
-own `scripts/teamflow`, which the skills call, hands every command to that
-tool home while it is unmodified. Refreshed files show up in `git status`.
-Review and commit them like any other change.
+The installed tool holds the launcher, the helper scripts, the default roles,
+the note templates, and the full skill instructions. A project holds only:
+
+- `teamflow.conf`: the worker catalog and default team, owned by the
+  project. `init` records `teamflow = <version>`, the lowest teamflow version
+  the project needs. `doctor`, `list`, and `start` warn when the installed
+  version is older.
+- Stub skills in `.claude/skills/` (Claude Code) and `.agents/skills/`
+  (Codex). A stub carries the skill's trigger text and runs
+  `teamflow guide <skill>`, which prints the current instructions from the
+  installed version. So skills exist only in projects that use teamflow, and
+  a teamflow update reaches every project without touching its files. On a
+  machine without teamflow, a stub tells the agent to recommend installing
+  it, and never to install it without your approval.
+- The marked teamflow section of `AGENTS.md`.
+- `.agents/roles/<role>.md`, only for roles you customize.
+  `teamflow role edit <role>` copies the default into the project, where it
+  overrides the installed one for newly started workers.
+  `teamflow role show <role>` prints the role in effect.
+
+Everything else is runtime state in `.git/teamflow/` and
+`.teamflow-worktrees/`, outside version control.
+
+## Moving from older versions
+
+Older versions copied the launcher, the helper scripts, the roles, the
+templates, and the full skills into every project. Run `teamflow init` once
+in such a project. It removes each copied file that is unmodified, keeps
+edited role files as project overrides, lists any other edited file for you
+to review, and writes the stub skills. The removals show up in `git status`
+for you to review and commit. A team still running from the copied files is
+refused until `teamflow --kill`.
 
 Versions before the rename kept their state under the name ai-team. The
 first `init`, `start`, `up`, or `workers` command moves it:
@@ -89,7 +130,7 @@ them. The shipped catalog:
 `teamflow config` and `teamflow start` launch. The shipped default team is
 `researcher-1`, `reviewer-1`, `developer-l-1`, and the `notetaker`. A config
 with no worker sections is a pure catalog, and workers only join on demand.
-The three developer types share `.agents/roles/developer.md`. The type
+The three developer types share the developer role. The type
 selects the CLI, model, and effort, and the Delegator defines task scope in
 each assignment. The Notetaker has the singleton ID `notetaker` and must be
 last in a default team. The launcher never silently substitutes a model. If
@@ -169,11 +210,11 @@ role file) require a restart. Use `--config <file>` to manage a variant.
 another file with `--config`:
 
 ```
-./scripts/teamflow up --config <file>              # launch or reattach
-./scripts/teamflow up --no-attach --config <file>  # same, detached
-./scripts/teamflow --verify --config <file>
-./scripts/teamflow --check-models --config <file>
-./scripts/teamflow --kill --config <file>
+teamflow up --config <file>              # launch or reattach
+teamflow up --no-attach --config <file>  # same, detached
+teamflow --verify --config <file>
+teamflow --check-models --config <file>
+teamflow --kill --config <file>
 ```
 
 Mode and flags go in any order, and `--config=<file>` works too. `init`
@@ -206,8 +247,8 @@ launcher records the running session and the config that started it in
 Switching is always stop, then start:
 
 ```
-./scripts/teamflow --kill
-./scripts/teamflow start --config teamflow.zai.conf
+teamflow --kill
+teamflow start --config teamflow.zai.conf
 ```
 
 ### Example: a z.ai-only variant
@@ -220,10 +261,10 @@ Edit the types in the copy, for example `cli = zai` and `model = glm-5.3`
 for every developer type, then check the models and switch:
 
 ```
-./scripts/teamflow --check-models --config teamflow.zai.conf
-./scripts/teamflow --kill
-./scripts/teamflow start --config teamflow.zai.conf
-./scripts/teamflow --verify        # reports the running team and its config
+teamflow --check-models --config teamflow.zai.conf
+teamflow --kill
+teamflow start --config teamflow.zai.conf
+teamflow --verify        # reports the running team and its config
 ```
 
 Conversations follow the CLI. An instance whose CLI differs in the other
@@ -239,7 +280,7 @@ Code, or Claude routed to z.ai. It never runs inside tmux. Workers join on
 demand with `teamflow add <type>`, or the default team starts together:
 
 ```
-./scripts/teamflow start                    # the default team; prints the session name
+teamflow start                    # the default team; prints the session name
 tmux attach -t <session>                     # watch the workers (optional)
 ```
 
@@ -250,25 +291,22 @@ Delegator pane inside tmux. That full-team mode is gone: `teamflow init`
 removes a leftover `[pane.delegator]` section from the config, and a full
 team still running from an older version is refused until `--kill`.
 
-Your session has no `AGENT_*` variables. `.agents/lib/delegator.sh` sets
-them from the repo it belongs to, then runs `task.sh` or `pane.sh`:
+Your session has no `AGENT_*` variables. `teamflow task` and `teamflow pane`
+act as the Delegator on the mailbox of the repository you run them in:
 
 ```
-bash .agents/lib/delegator.sh task new developer-l-1 'Title' <<'EOF'
+teamflow task new developer-l-1 'Title' <<'EOF'
 ...assignment...
 EOF
-bash .agents/lib/delegator.sh pane send-to developer-l-1 "Task T-0001: Title. Details: task.sh read T-0001"
-bash .agents/lib/delegator.sh task inbox delegator
-bash .agents/lib/delegator.sh task release T-0001 abc1234
+teamflow pane send-to developer-l-1 "Task T-0001: Title. Details: task.sh read T-0001"
+teamflow task inbox delegator
+teamflow task release T-0001 abc1234
 cat .git/teamflow/note-queue/completed/T-0001.md
 ```
 
-It refuses to run inside a worker window. `init` copies the `teamflow`,
+They refuse to run inside a worker window. The `teamflow`,
 `teamflow-resume`, `teamflow-kill`, `teamflow-workers`, and `teamflow-trim`
-skills from the tool home into the project's `.agents/skills/`
-for Codex and `.claude/skills/` for Claude Code. Later runs refresh
-unmodified copies and stage `.new` files for local edits (see Updates and
-upgrades).
+skills reach the agent as stubs in the project (see What a project holds).
 
 ## Prerequisites
 
@@ -283,9 +321,9 @@ upgrades).
 
 ## Daily use
 
-- **Start the default team**: `./scripts/teamflow start` (detached), or
-  `./scripts/teamflow up` to attach (from anywhere inside the repo)
-- **Another config**: `./scripts/teamflow start --config <file>`, one team at
+- **Start the default team**: `teamflow start` (detached), or
+  `teamflow up` to attach (from anywhere inside the repo)
+- **Another config**: `teamflow start --config <file>`, one team at
   a time (see Choosing a config)
 - **Talk**: plan with the Delegator in your own agent session. It turns the
   plan into tasks, adds the workers it needs, dispatches the tasks, and
@@ -295,15 +333,15 @@ upgrades).
   `done` (result in the task record). Nothing is ever typed into the
   Delegator session (`send-to delegator` is rejected); it discovers
   completions via `task.sh inbox delegator`.
-- **Check results yourself**: `bash .agents/lib/task.sh list`,
+- **Check results yourself**: `teamflow task list`,
   `... read T-0003`, `... inbox <instance-id>`
-- **Send text to a pane**: `bash .agents/lib/pane.sh send-to developer-l-1 "..."`
+- **Send text to a pane**: `teamflow pane send-to developer-l-1 "..."`
   (`... tail developer-l-1` shows what's on screen — a CLI may be busy; delivery
   ≠ completion, the mailbox is the source of truth)
-- **Verify panes**: `./scripts/teamflow --verify` (liveness + role acks)
-- **Trim**: `./scripts/teamflow trim` (removes idle workers; stops the team
+- **Verify panes**: `teamflow --verify` (liveness + role acks)
+- **Trim**: `teamflow trim` (removes idle workers; stops the team
   when every worker is idle)
-- **Stop**: `./scripts/teamflow --kill` (stops the session, removes worktrees
+- **Stop**: `teamflow --kill` (stops the session, removes worktrees
   whose work is already merged, and lists the rest; see Stopping and
   worktrees)
 - **Note handoff**: after reading a result and integrating any code, the
@@ -399,9 +437,9 @@ or squash-merged), the worktree and branch are removed. The others are
 listed with what they hold. Decide each one:
 
 ```
-./scripts/teamflow worktrees list
-./scripts/teamflow worktrees merge developer-l-1    # commit leftovers, cherry-pick onto the current branch
-./scripts/teamflow worktrees discard developer-l-1  # delete the worktree, branch, and changes
+teamflow worktrees list
+teamflow worktrees merge developer-l-1    # commit leftovers, cherry-pick onto the current branch
+teamflow worktrees discard developer-l-1  # delete the worktree, branch, and changes
 ```
 
 `merge` needs a main checkout without uncommitted changes to tracked files.
@@ -417,34 +455,31 @@ checkout's current commit. A kept branch is reused, so its work continues.
 
 ## Where things live
 
-- `.agents/roles/*.md` — role instructions (static; injected at launch)
-- `.git/teamflow/` — the mailbox: `tasks/<id>/{task.md,result.md,status}`,
+- `~/.local/share/teamflow/<version>/` - the installed tool: `scripts/`
+  (launcher and helpers), `.agents/lib/` (mailbox, window, Delegator, and
+  watcher scripts), `.agents/roles/` (default roles), `.agents/doc-templates/`
+  (note templates and the notes workflow), and `skills/` (full skill text).
+  `current` points at the active version, `source` names the checkout it
+  came from, and `~/.local/bin/teamflow` links to `current`.
+- `teamflow.conf`, the stub skills in `.claude/skills/` and `.agents/skills/`,
+  the marked `AGENTS.md` section, and customized `.agents/roles/*.md` - the
+  project's own teamflow files (see What a project holds)
+- `.git/teamflow/` - the mailbox: `tasks/<id>/{task.md,result.md,status}`,
   `acks/`, `panes.tsv`, `sends.log`, `sessions/<instance-id>` (per-role conversation
   registry; runtime state; excluded from git; instantly visible to all
   worktrees because it sits in the git common dir)
-- `.git/teamflow/active` - the running session and the config that
-  started it. `.git/teamflow/sessions/<instance-id>.<cli>` - a conversation
-  parked while that role runs another CLI. `.git/teamflow/tool-home` - the
-  tool home that last refreshed this project (see Updates and upgrades).
-- `.agents/teamflow-manifest` - blob ids of the shipped files as installed,
-  so a later refresh can tell unmodified copies from local edits
-- `scripts/teamflow_scaffold.py` - installs, refreshes, and migrates the scaffold
-- `.teamflow-worktrees/<instance-id>` + branches `teamflow/<instance-id>` - developer panes
+- `.git/teamflow/active` - the running session, the config that started it,
+  and the installed version that runs it. `.git/teamflow/sessions/<instance-id>.<cli>`
+  - a conversation parked while that role runs another CLI.
+- `.teamflow-worktrees/<instance-id>` + branches `teamflow/<instance-id>` - developer worktrees
   (created when the worker starts, removed by `--kill` once their work is merged)
-- Repo-root `AGENTS.md` — shared coordination rules (marked section,
-  `teamflow init` owns only the markers)
-- `.agents/doc-templates/` - note templates and the project notes workflow
-- `.agents/lib/delegator.sh` - runs `task.sh` and `pane.sh` as the
-  Delegator from outside tmux (workers mode)
-- `skills/teamflow/`, `skills/teamflow-resume/`, `skills/teamflow-kill/`, `skills/teamflow-workers/`, and `skills/teamflow-trim/` (tool home) - source skills
-- `.agents/skills/` and `.claude/skills/` (initialized projects) - repo-scoped copies of those skills
 
 ## Project notes
 
-`init` copies five plain Markdown templates into `.agents/doc-templates/`:
-source, concept, code map, decision, and experiment. They share one
-frontmatter convention with a review status, and the folder's README.md
-is the workflow. Notes belong to the Notetaker alone. Teamflow creates
+The installed tool ships five plain Markdown note templates: source,
+concept, code map, decision, and experiment. They share one frontmatter
+convention with a review status, and `teamflow guide notes` prints the
+workflow. Worker windows find the templates under `$TEAMFLOW_HOME`. Notes belong to the Notetaker alone. Teamflow creates
 `docs/notes/` when a Notetaker joins the team, at start or through
 `workers add notetaker`, and never otherwise. The Delegator never writes
 notes. Without a Notetaker, released tasks wait in the mailbox, and a

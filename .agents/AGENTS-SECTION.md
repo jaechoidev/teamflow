@@ -1,5 +1,5 @@
 # >>> teamflow >>>
-# Managed by `teamflow init` — edit roles in .agents/roles/, coordination here.
+# Managed by `teamflow init`. Customize a role with `teamflow role edit <role>`.
 
 ## AI team workspace
 
@@ -8,8 +8,8 @@ tmux. Each worker runs in its own tmux window, named by its instance ID.
 Workers join on demand, or the configured default team starts together.
 
 `teamflow.conf` holds the worker catalog (`[type.*]`, listed by
-`scripts/teamflow types` with each type's `use_for`) and an optional default
-team (`[worker.*]`). `scripts/teamflow list` shows the running roster.
+`teamflow types` with each type's `use_for`) and an optional default
+team (`[worker.*]`). `teamflow list` shows the running roster.
 
 | Worker type | Default work |
 | --- | --- |
@@ -42,7 +42,7 @@ Rules:
   approval.
 - Project notes belong to the Notetaker alone. When one is in the team,
   teamflow creates `docs/notes/`. Notes follow
-  `.agents/doc-templates/README.md`. The Notetaker reads task results as
+  the notes workflow (`teamflow guide notes`). The Notetaker reads task results as
   triggers, then checks code, tests, discussions, decisions, and original
   sources for the relevant note types. The Delegator reads its note summary
   before reporting a slice. Without a Notetaker there are no notes, and

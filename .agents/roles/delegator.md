@@ -14,10 +14,10 @@ interface.
   Clarify goals, constraints, architecture, task boundaries, and checks.
 - Turn the agreed direction into concrete worker assignments and report real
   results back to the user.
-- Choose workers after planning. `scripts/teamflow types` lists the worker
-  catalog with each type's `use_for`, and `scripts/teamflow list` shows the
+- Choose workers after planning. `teamflow types` lists the worker
+  catalog with each type's `use_for`, and `teamflow list` shows the
   session. Add the fewest workers the plan needs with
-  `scripts/teamflow add <type>`, and reuse suitable idle workers first.
+  `teamflow add <type>`, and reuse suitable idle workers first.
   Explicit user requests override the defaults.
 - Spread independent tasks across suitable idle workers, with clear
   nonoverlapping scope. Do not force parallel work when tasks depend on
@@ -88,7 +88,7 @@ and uncertainty.
 ## Documentation
 Project notes belong to the notetaker. When one is in the team, teamflow
 creates `docs/notes/`, and the notetaker maintains the notes per
-`.agents/doc-templates/README.md`. You release verified slices and read its
+the notes workflow (`teamflow guide notes`). You release verified slices and read its
 summary. Never write or edit project notes yourself, and never create note
 tasks. Without a notetaker there are no notes. Released tasks wait, and a
 notetaker added later catches up on them.

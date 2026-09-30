@@ -13,36 +13,25 @@ into your session.
 ## 1. Check the repo
 
 Work from the target project folder. A linked worktree of the project also
-works: the launcher and the mailbox act on the main checkout's team. The
-project has adopted teamflow when both `scripts/teamflow` and
-`.agents/lib/delegator.sh` exist. If they do not, ask the user for the
-teamflow tool home, then run `bash <tool-home>/scripts/teamflow init`.
+works: teamflow acts on the main checkout's team. The project uses teamflow
+when it has a `teamflow.conf`. If it has none, ask the user whether to set
+it up, then run `teamflow init`. If `teamflow doctor` or any command says the
+project still has copied teamflow files from an older version, run
+`teamflow init` to remove them, and report what it kept.
 
-Then check that the launcher knows on-demand workers:
-
-```
-./scripts/teamflow --help | grep -q "scripts/teamflow types"
-```
-
-If this fails, the project launcher is older. Run
-`bash <tool-home>/scripts/teamflow init` from the project folder. It refreshes
-the project's unmodified teamflow files, and later `./scripts/teamflow` calls
-hand off to the tool home. Report any `.new` files it stages for locally
-edited copies.
-
-Read `.agents/roles/delegator.md` and `AGENTS.md` and follow them. Where the
-role instructions show `bash "$AGENT_LIB_DIR/task.sh" ...` or `pane.sh ...`,
-use the helper in step 4 instead.
+Run `teamflow role show delegator` and follow that role, together with
+`AGENTS.md`. Where the role shows `bash "$AGENT_LIB_DIR/task.sh" ...` or
+`pane.sh ...`, use `teamflow task ...` and `teamflow pane ...` instead.
 
 ## 2. Choose how the team starts
 
 Look at how the user invoked this skill.
 
 - **Plain `teamflow`** (the default): do not start any workers yet. If a team
-  is already running, `./scripts/teamflow list` shows it, and you use it.
+  is already running, `teamflow list` shows it, and you use it.
   Otherwise plan first (step 3) and add workers only when the plan needs them.
 - **`teamflow config`, or `teamflow config <file>`**: start the configured
-  default team now with `./scripts/teamflow start`, adding `--config <file>`
+  default team now with `teamflow start`, adding `--config <file>`
   when the user named one. Then plan and delegate to that team, and still add
   workers on demand if the plan needs a type the team lacks.
 
@@ -57,9 +46,9 @@ Plan the work with the user first, as the Delegator role describes. When the
 plan is ready to execute, decide which workers it needs:
 
 ```
-./scripts/teamflow types     # the catalog: CLI, model, effort, use_for
-./scripts/teamflow list      # who is in the session now
-./scripts/teamflow add <type>
+teamflow types     # the catalog: CLI, model, effort, use_for
+teamflow list      # who is in the session now
+teamflow add <type>
 ```
 
 - Pick each type by its `use_for` and the task: a large or risky change
@@ -74,16 +63,16 @@ plan is ready to execute, decide which workers it needs:
 - Add a Notetaker only when the user wants project notes. Project notes
   belong to the Notetaker. Never write notes yourself or create note tasks.
 
-`./scripts/teamflow list` prints a `tmux attach -t <session>:<id>` command for
+`teamflow list` prints a `tmux attach -t <session>:<id>` command for
 each running worker. Give the user the command for the worker they want to
 watch. Inside tmux, `tmux switch-client -t` takes the same target. To watch
-several workers side by side, `./scripts/teamflow view <id> <id>...` (or no
+several workers side by side, `teamflow view <id> <id>...` (or no
 IDs for all) gathers them into one tiled window and prints its command, and
-`./scripts/teamflow view --close` puts them back. Check `tmux show-options -g prefix` first,
+`teamflow view --close` puts them back. Check `tmux show-options -g prefix` first,
 because user configurations can change the default `Ctrl-B` prefix.
 
 Before the first task to a new worker, inspect it with
-`bash .agents/lib/delegator.sh pane tail <id>`. A fresh Claude Code worktree
+`teamflow pane tail <id>`. A fresh Claude Code worktree
 may show a project trust prompt. Sending a task while that prompt is open can
 select `No, exit`, leaving the task assigned and the window dead. For a
 workspace the user has authorized, select the displayed trust option in tmux,
@@ -95,20 +84,20 @@ acknowledge when they act on their first message.
 ## 4. Dispatch and collect
 
 Your shell has no `AGENT_*` variables. Run every mailbox and pane command
-through the helper, which sets `AGENT_ROLE=delegator` and this repo's
-mailbox:
+through `teamflow task` and `teamflow pane`, which act as the Delegator on
+this repo's mailbox:
 
 ```
-bash .agents/lib/delegator.sh task ack
-bash .agents/lib/delegator.sh task new developer-l-1 'Short title' <<'EOF'
+teamflow task ack
+teamflow task new developer-l-1 'Short title' <<'EOF'
 Concrete assignment and the expected output.
 EOF
-bash .agents/lib/delegator.sh pane send-to developer-l-1 "Task T-0001: Short title. Details: task.sh read T-0001"
-bash .agents/lib/delegator.sh task inbox delegator
-bash .agents/lib/delegator.sh task status T-0001
-bash .agents/lib/delegator.sh task read T-0001
-bash .agents/lib/delegator.sh pane tail developer-l-1
-bash .agents/lib/delegator.sh task release T-0001 abc1234
+teamflow pane send-to developer-l-1 "Task T-0001: Short title. Details: task.sh read T-0001"
+teamflow task inbox delegator
+teamflow task status T-0001
+teamflow task read T-0001
+teamflow pane tail developer-l-1
+teamflow task release T-0001 abc1234
 cat .git/teamflow/note-queue/completed/T-0001.md
 ```
 

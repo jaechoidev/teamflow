@@ -6,14 +6,14 @@ description: Bring back the teamflow workers of the last session for the current
 # Resume teamflow workers
 
 Work from the target project folder. Check that `git rev-parse --show-toplevel`
-and `git rev-parse --verify HEAD` succeed and that `scripts/teamflow` and
-`.agents/lib/delegator.sh` exist at the repository root. If any check fails,
-stop and explain that this project has not completed teamflow setup. The first
-run in a new folder uses the shell command `teamflow init` from the tool home.
-Do not run `init` through this skill.
+and `git rev-parse --verify HEAD` succeed and that `teamflow.conf` exists at
+the repository root. If any check fails, stop and explain that this project
+has not been set up with `teamflow init`. Do not run `init` through this
+skill.
 
-Read `AGENTS.md` and `.agents/roles/delegator.md`. From the repository root,
-run `./scripts/teamflow start --last`. It starts the workers of the last
+Read `AGENTS.md` and the role that `teamflow role show delegator` prints.
+From the repository root,
+run `teamflow start --last`. It starts the workers of the last
 session, whether they came from the default team or were added on demand,
 and resumes their saved conversations when available. Add `--config <file>`
 when the user named a config. If there was no earlier session, relay the
@@ -21,10 +21,10 @@ message and offer the `teamflow` skill instead. It does not reopen the user's
 separate Delegator chat.
 
 If workers are already running, `start` returns the existing tmux session.
-Report the printed session name and check `./scripts/teamflow list`. If
+Report the printed session name and check `teamflow list`. If
 `start` printed "The last team stopped at ...", relay it, and ask the user
 what to do with each unfinished task it names: resend, reassign, or drop. Inspect
-workers with `bash .agents/lib/delegator.sh pane tail <id>` before
+workers with `teamflow pane tail <id>` before
 dispatching tasks, and handle any project trust prompts for this authorized
 workspace. Then continue as the Delegator with the `teamflow` skill.
 

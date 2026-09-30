@@ -15,7 +15,8 @@ main checkout and receive one released mailbox task at a time.
    inspect original sources. Use the mailbox as a trigger and pointer, not as
    sufficient evidence. Mark any missing rationale or inaccessible log as an
    evidence gap.
-3. Follow `.agents/doc-templates/README.md`. Update affected files in
+3. Follow the notes workflow in `$TEAMFLOW_HOME/.agents/doc-templates/README.md`
+   (`teamflow guide notes` prints it). Its templates are in the same folder. Update affected files in
    `docs/notes/`. Record supported claims and uncertainty. Do not invent a
    rationale or the user's own-words explanations and memory answers.
 4. Save the note files. Run `task.sh noted <id> '<brief summary and note paths>'` only after the pass is

@@ -37,7 +37,7 @@ team_running() {
     | awk -v n="$session" -v c="$created" '{ s = $1; sub(/^[^ ]+ /, ""); if ($0 == n && s == c) found = 1 } END { exit !found }'
 }
 
-delegator_alive() { bash "$root/.agents/lib/delegator.sh" alive 2>/dev/null; }
+delegator_alive() { (cd "$root" && bash "$(dirname "$0")/delegator.sh" alive) 2>/dev/null; }
 
 who() { # how the log names the Delegator
   if [ "$(field KIND)" = codex ]; then printf 'Codex (any Codex session in this project)'

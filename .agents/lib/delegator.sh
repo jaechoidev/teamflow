@@ -1,19 +1,18 @@
 #!/usr/bin/env bash
-# delegator.sh: run task.sh or pane.sh as this repo's Delegator from any
-# terminal, e.g. a Codex, Claude, or z.ai session outside tmux while the
-# workers run in the team's tmux session.
+# delegator.sh: run task.sh or pane.sh as the Delegator of the project it is
+# run in, from the user's own agent session outside tmux. `teamflow task`
+# and `teamflow pane` call it.
 #
-# Usage:
+# Usage (from inside the project, any checkout or linked worktree of it):
 #   delegator.sh task <task.sh args...>   e.g. task new developer-l-1 'Title' <<'EOF'
 #   delegator.sh pane <pane.sh args...>   e.g. pane send-to developer-l-1 "Task T-0001: ..."
 #   delegator.sh register                 record the calling agent session only
 #   delegator.sh alive                    exit 0 while the recorded Delegator runs
 #
-# AGENT_ROLE, AGENT_MAILBOX, and AGENT_LIB_DIR come from this file's own
-# location (its repo's git common dir), never from the caller's environment
-# or working directory, so every call reaches the same mailbox. Inside a
-# worker pane (AGENT_ROLE set to another role) it refuses: a worker never
-# acts as the Delegator.
+# The mailbox is <git common dir>/teamflow of the repository in the current
+# directory, never the caller's AGENT_MAILBOX, so every call reaches the
+# project's one mailbox. Inside a worker pane (AGENT_ROLE set to another
+# role) it refuses: a worker never acts as the Delegator.
 #
 # task, pane, and register record the Delegator in <mailbox>/delegator. The
 # team's watcher (watch.sh) stops the team some time after it leaves. The
@@ -36,8 +35,8 @@ case "$tool" in
   *) fail "usage: delegator.sh task|pane <args...> | register | alive" ;;
 esac
 lib="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)" || fail "cannot locate $0"
-common="$(git -C "$lib" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)" \
-  || fail "$lib is not inside a git repository"
+common="$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null)" \
+  || fail "not inside a git repository: run this from the project that uses teamflow"
 
 register() { # $1 mailbox
   local pid=$$ ppid name line started kind=process
