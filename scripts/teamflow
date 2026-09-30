@@ -12,7 +12,7 @@
 #   scripts/teamflow --check-models  probe configured models (spends a little
 #                                 quota; clean env, zai panes source zai_env)
 #   scripts/teamflow --kill        kill the workspace session
-#   scripts/teamflow workers list|add|remove|migrate  manage worker instances
+#   scripts/teamflow workers list|add|remove  manage worker instances
 #
 # Flags:
 #   --config <file>  use this workspace config instead of teamflow.conf (start, up,
@@ -25,7 +25,6 @@
 #                    Delegator pane. The Delegator runs in your own terminal
 #                    and reaches the mailbox through .agents/lib/delegator.sh.
 #                    [pane.delegator] is ignored and may be absent.
-#   --dry-run        preview workers migrate without changing files
 #   -h|--help        show this help
 #
 # Design notes:
@@ -498,7 +497,7 @@ cmd_init() {
     say "wrote teamflow.conf (user-owned: edit worker types and instances here; init never overwrites it)"
   else
     say "teamflow.conf already present — left untouched"
-    if ! grep -q '^\[pane\.notetaker\]\|^\[worker\.notetaker\]' "$root/teamflow.conf"; then
+    if ! grep -q '^\[worker\.notetaker\]' "$root/teamflow.conf"; then
       say "add a Notetaker section from $src/teamflow.conf to enable the note queue"
     fi
   fi
@@ -969,7 +968,7 @@ cmd_verify() { # $1 --config value ('' = the running team, else the default conf
     fi
     if [ -f "$mailbox/acks/$role.json" ]; then
       # ack records are JSON (T-0003 format); fall back to a bare "yes" for
-      # missing time fields or legacy/unreadable records rather than crashing
+      # missing time fields or unreadable records rather than crashing
       ack_time="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("time",""))' "$mailbox/acks/$role.json" 2>/dev/null)"
       case "$ack_time" in
         ?*) ack="yes ($ack_time)" ;;
@@ -1051,14 +1050,13 @@ cmd_kill() { # $1 --config value ('' = the running team, else the default config
   say "worktrees and branches are left in place (inspect .ai-team-worktrees/)"
 }
 
-cmd_workers() { # $1 config argument $2 action $3 value $4 dry-run
+cmd_workers() { # $1 config argument $2 action $3 value
   local root conf
   root="$(team_root)" || exit $?
   conf="$(resolve_conf "$root" "$1")" || exit $?
-  [ -n "$2" ] || die "usage: teamflow workers list|add <type>|remove <id>|migrate [--dry-run]"
+  [ -n "$2" ] || die "usage: teamflow workers list|add <type>|remove <id>"
   local -a args=("$2" "$conf" "$root")
   [ -z "$3" ] || args+=("$3")
-  [ "$4" = 0 ] || args+=(--dry-run)
   python3 "$TOOL_HOME/scripts/teamflow_workers.py" "${args[@]}"
 }
 
@@ -1066,7 +1064,7 @@ cmd_workers() { # $1 config argument $2 action $3 value $4 dry-run
 
 # Mode and flags may come in any order. Everything is parsed and checked
 # before any mode runs, so a mistyped command line has no side effects.
-MODE="" NO_ATTACH=0 CONFIG="" CONFIG_GIVEN=0 WORKERS=0 WORKER_ACTION="" WORKER_VALUE="" DRY_RUN=0
+MODE="" NO_ATTACH=0 CONFIG="" CONFIG_GIVEN=0 WORKERS=0 WORKER_ACTION="" WORKER_VALUE=""
 
 pick_mode() {
   [ -z "$MODE" ] || [ "$MODE" = "$1" ] || die "choose one mode: '$MODE' and '$1' cannot be combined"
@@ -1076,10 +1074,9 @@ pick_mode() {
 while [ $# -gt 0 ]; do
   case "$1" in
     init|start|up|--verify|--check-models|--kill|workers) pick_mode "$1" ;;
-    list|add|remove|migrate)
+    list|add|remove)
       [ "$MODE" = workers ] && [ -z "$WORKER_ACTION" ] || die "unknown argument: $1"
       WORKER_ACTION="$1" ;;
-    --dry-run) DRY_RUN=1 ;;
     --no-attach) NO_ATTACH=1 ;;
     --workers) WORKERS=1 ;;
     --config|--config=*)
@@ -1114,8 +1111,6 @@ MODE="${MODE:-up}"
   || die "--workers applies to start or up only, not to $MODE (--verify and --kill follow the running team)"
 [ "$CONFIG_GIVEN" = 0 ] || [ "$MODE" != init ] \
   || die "--config does not apply to init, which reads no config. Pass it to start, up, --verify, --check-models, or --kill"
-[ "$DRY_RUN" = 0 ] || { [ "$MODE" = workers ] && [ "$WORKER_ACTION" = migrate ]; } \
-  || die "--dry-run applies only to workers migrate"
 
 case "$MODE" in
   init)           cmd_init ;;
@@ -1124,5 +1119,5 @@ case "$MODE" in
   --verify)       cmd_verify "$CONFIG" ;;
   --check-models) cmd_check_models "$CONFIG" ;;
   --kill)         cmd_kill "$CONFIG" ;;
-  workers)        cmd_workers "$CONFIG" "$WORKER_ACTION" "$WORKER_VALUE" "$DRY_RUN" ;;
+  workers)        cmd_workers "$CONFIG" "$WORKER_ACTION" "$WORKER_VALUE" ;;
 esac

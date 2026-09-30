@@ -71,11 +71,7 @@ Add `teamflow workers list|add|remove` with the existing `--config <file>` behav
 
 Commands validate the complete proposed configuration and write it atomically. A failed command leaves the file unchanged. Edits to a running team's configuration take effect after `teamflow --kill` and `teamflow start`. Management commands never stop or restart a team automatically. This follows the existing config hash check.
 
-## Existing projects
-
-The launcher continues to read current `[pane.<role>]` configs unchanged. Their role IDs, task records, session registry, and worktrees keep working. Worker management `list` supports them, but `add` and `remove` require the new format and give an explicit migration instruction.
-
-Provide `teamflow workers migrate --dry-run` to preview the ID mapping and `teamflow workers migrate` to apply it. Migration requires a stopped team and no task records addressed to old worker IDs. It converts the config to type and worker sections, using `-1` for each existing regular worker, and preserves the singleton `notetaker` ID. It moves each existing worktree to the numbered path, renames its branch, and moves its conversation registry entry to the numbered ID. It refuses if any destination exists or a move cannot be completed safely. Migration preserves the original config in a backup beside it and reports every moved path. Existing tasks must finish their release and note workflow before migration, so no task retains an old destination.
+## Project setup
 
 `teamflow init` ships the new default configuration, role templates, skill, and launcher to adopted projects. As today, it leaves a project's existing `teamflow.conf` untouched. The skill is installed in both `.agents/skills/` and `.claude/skills/`.
 
@@ -85,4 +81,4 @@ The Delegator selects a specific instance ID, then uses it consistently in `task
 
 ## Verification
 
-Test config resolution with multiple instances of one type, singleton and order constraints, invalid types and IDs, and legacy configs. Test add, list, and remove with an active config, a missing type, occupied task, and last-worker guard. Test migration with preserved conversation and worktree identity plus refusal cases. Run a launcher smoke test with two instances of one type and verify distinct panes, mailbox destinations, and worktrees. Check that a changed config requires restart and that the Notetaker still processes one released task at a time.
+Test config resolution with multiple instances of one type, singleton and order constraints, and invalid types and IDs. Test add, list, and remove with an active config, a missing type, occupied task, and last-worker guard. Run a launcher smoke test with two instances of one type and verify distinct panes, mailbox destinations, and worktrees. Check that a changed config requires restart and that the Notetaker still processes one released task at a time.

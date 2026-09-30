@@ -55,28 +55,13 @@ class WorkersTest(unittest.TestCase):
         added = self.teamflow("workers", "add", "developer-m")
         self.assertIn("developer-m-3", added.stdout)
 
-    def test_migrate_preserves_worktree_and_session(self):
-        legacy = subprocess.check_output(["git", "show", "HEAD:teamflow.conf"],
-                                         cwd=SOURCE, text=True)
-        (self.root / "teamflow.conf").write_text(legacy)
-        worktree = self.root / ".ai-team-worktrees" / "dev-senior"
-        worktree.parent.mkdir()
-        subprocess.run(["git", "-C", str(self.root), "worktree", "add", "-qb",
-                        "ai-team/dev-senior", str(worktree)], check=True)
-        sessions = self.root / ".git" / "ai-team" / "sessions"
-        sessions.mkdir(parents=True)
-        (sessions / "dev-senior").write_text(f"ROLE=dev-senior\nCWD={worktree}\nSESSION_ID=example\n")
-        preview = self.teamflow("workers", "migrate", "--dry-run")
-        self.assertEqual(preview.returncode, 0, preview.stderr)
-        self.assertIn("dev-senior -> developer-l-1", preview.stdout)
-        result = self.teamflow("workers", "migrate")
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertTrue((self.root / ".ai-team-worktrees" / "developer-l-1").exists())
-        self.assertIn("ROLE=developer-l-1", (sessions / "developer-l-1").read_text())
-        self.assertIn("developer-l-1", self.teamflow("workers", "list").stdout)
-        migrated = (self.root / "teamflow.conf").read_text()
-        self.assertEqual(migrated.count("role_file = .agents/roles/developer.md"), 3)
-        self.assertTrue((self.root / "teamflow.conf.pre-workers.bak").exists())
+    def test_old_pane_sections_are_rejected(self):
+        (self.root / "teamflow.conf").write_text(
+            "[workspace]\n[pane.researcher]\ncli = claude\nmodel = stub\n"
+        )
+        result = self.teamflow("workers", "list")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("unsupported pane section: pane.researcher", result.stderr)
 
     @unittest.skipUnless(shutil.which("tmux"), "tmux unavailable")
     def test_fifteen_instances_span_windows(self):

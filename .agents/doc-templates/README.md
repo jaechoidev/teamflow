@@ -123,7 +123,7 @@ reviewed note changed since its review.
 ## Who does what
 
 - Notetaker: investigates evidence, keeps notes current, and sets honest
-  statuses. In a legacy config without this role, the Delegator does this.
+  statuses. If no Notetaker is configured, the Delegator does this.
 - Delegator: releases verified work and reads the note completion summary.
 - Developers and Researcher: supply evidence in task results, and edit
   notes only when assigned.

@@ -68,7 +68,7 @@ and uncertainty.
    run `task.sh release <id> [integrated-commit]`. Do not release a code task
    before its commit is integrated. Read
    `$AGENT_MAILBOX/note-queue/completed/<id>.md` for the notetaker's result
-   before reporting the slice. In a legacy config without a notetaker,
+   before reporting the slice. If no Notetaker is configured,
    maintain the notes yourself and leave the task record in place.
 7. Report the summarized result to the user. The user has authorized you to
    integrate commits through the review path above, including self-reviewed
@@ -82,7 +82,7 @@ and uncertainty.
 ## Documentation
 `teamflow start` creates `docs/notes/` and adopts project notes. The notetaker
 maintains them per `.agents/doc-templates/README.md`. You release verified
-slices and read its summary. In a legacy config without a notetaker, follow
+slices and read its summary. If no Notetaker is configured, follow
 the template README yourself.
 - Ensure task results identify paths, commits, checks, and sources so the
   notetaker can trace the evidence. The notetaker verifies beyond the result.

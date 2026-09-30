@@ -3,8 +3,8 @@
 In workers mode, the Delegator plans with the user in an external terminal.
 Configured workers and the optional Notetaker run in tmux windows. Larger
 rosters spill into additional windows.
-The launcher also supports a full-team mode with the Delegator on the left
-and configured roles on the right. They share a task mailbox, and developers have
+The launcher also supports a full-team mode with the Delegator in the tiled
+workspace. They share a task mailbox, and developers have
 dedicated git worktrees.
 Any git repo can adopt it.
 
@@ -27,15 +27,10 @@ with a commit are never committed by `init`. The first commit gives the
 launcher a HEAD for developer worktrees. `start` launches workers mode
 without attaching to the tmux session.
 
-For an existing project, run `init` again to receive the new launcher, role
-files, and skill. Init keeps your `teamflow.conf`. Legacy configs still launch.
-Use `teamflow workers migrate --dry-run` to preview conversion to worker
-instances, then migrate when the team is stopped and old task records are clear.
-
 ## Pane map
 
 In workers mode, the **Delegator and Planner** runs outside tmux. The
-default config stacks these four panes from top to bottom:
+default config starts these four panes in order:
 
 1. **Researcher** - z.ai GLM (`glm-5.3`, max)
 2. **Reviewer** - Claude (`fable`, max)
@@ -88,8 +83,7 @@ another file with `--config`:
 
 Mode and flags go in any order, and `--config=<file>` works too. `init`
 takes no config. A variant has a `[workspace]` section and at least one
-worker instance. `[worker.notetaker]` is optional and must be last. Legacy
-`[pane.<instance-id>]` configs remain supported. Without `--config`
+worker instance. `[worker.notetaker]` is optional and must be last. Without `--config`
 everything behaves as before.
 
 **Paths.** An absolute path is used as given, and a leading `~/` means
