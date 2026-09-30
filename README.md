@@ -99,7 +99,7 @@ something is missing it says exactly what and where to fix it.
 
 ```
 teamflow types                      # the worker catalog
-teamflow list                       # the running roster
+teamflow list                       # the running roster, with a tmux command per window
 teamflow add developer-m            # add a worker. With no team running, start one
 teamflow add developer-m-1          # bring back that worker and its conversation
 teamflow add researcher --save      # also add it to the default team
@@ -117,7 +117,9 @@ window, removing closes one, and other workers keep running. The session
 roster lives in `.git/teamflow/running.conf`, so `teamflow.conf` and
 `git status` stay unchanged. Add `--save` to also write the change to the
 default team in `teamflow.conf`. `teamflow list` marks workers that exist in
-this session only.
+this session only, and prints `tmux attach -t <session>:<id>` for each running
+worker to open its window. Inside tmux, use `tmux switch-client -t` with the
+same target.
 
 With no team running, `add` starts one with just that worker, so a team can
 grow from zero as the Delegator needs workers. `add <type>` reuses a worker

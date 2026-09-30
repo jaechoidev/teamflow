@@ -25,4 +25,4 @@ When no team is running, `add` starts a team with just that worker, and later ad
 
 After adding a worker, run `bash .agents/lib/delegator.sh pane tail <instance-id>` before giving it a task. A new worktree can open with a Claude Code project trust prompt, and a task sent into that prompt can select `No, exit`. For a workspace the user has authorized, select the displayed trust option in tmux, then check that the CLI is ready.
 
-After a change, run `list` and report the instance IDs, including any marked `session only`. If the user also asked to start or resume workers, follow the `teamflow` or `teamflow-resume` skill.
+After a change, run `list` and report the instance IDs, including any marked `session only`, and the `tmux attach` command it prints for each running worker. If the user also asked to start or resume workers, follow the `teamflow` or `teamflow-resume` skill.

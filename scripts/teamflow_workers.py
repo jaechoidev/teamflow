@@ -409,17 +409,31 @@ def list_workers(root, path):
         state = panes.get(worker_id, "stopped")
         if record and worker_id not in in_config:
             state += " (session only)"
-        print(f"{worker_id}\t{kind or worker_id}\t{cli}\t{model}\t{worktree}\t{state}")
+        target = window_target(record, worker_id, panes[worker_id]) if worker_id in panes else ""
+        opener = f"\ttmux attach -t {target}" if target else ""
+        print(f"{worker_id}\t{kind or worker_id}\t{cli}\t{model}\t{worktree}\t{state}{opener}")
     for worker_id, pane in panes.items():
         if worker_id not in listed and worker_id != "delegator":
             print(f"{worker_id}\tnot in the roster\t\t\t\t{pane}")
     if record:
         for worker_id in sorted(in_config - listed):
             print(f"{worker_id}\tin {path.name}, not in this session\t\t\t\tstopped")
+        if panes:
+            print("already inside tmux? use tmux switch-client -t with the same target instead of attach")
         digest = hashlib.sha256(path.read_bytes()).hexdigest()
         if record.get("CONFIG_HASH", digest) != digest:
             print(f"{path.name} changed since this team started. It applies at the next start",
                   file=sys.stderr)
+
+
+def window_target(record, worker_id, pane):
+    """The tmux target of a worker's window. A window named after its worker
+    is targeted by name, which survives window renumbering."""
+    try:
+        index, name = tmux("display-message", "-p", "-t", pane, "#{window_index} #{window_name}").split(" ", 1)
+    except (ConfigError, ValueError):
+        return ""
+    return f"{record['SESSION']}:{worker_id if name == worker_id else index}"
 
 
 def instances(cp, kind=None):

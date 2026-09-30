@@ -74,8 +74,9 @@ plan is ready to execute, decide which workers it needs:
 - Add a Notetaker only when the user wants project notes. Project notes
   belong to the Notetaker. Never write notes yourself or create note tasks.
 
-Tell the user they can watch with `tmux attach -t <session>`, then switch
-windows with the tmux window keys. Check `tmux show-options -g prefix` first,
+`./scripts/teamflow list` prints a `tmux attach -t <session>:<id>` command for
+each running worker. Give the user the command for the worker they want to
+watch. Inside tmux, `tmux switch-client -t` takes the same target. Check `tmux show-options -g prefix` first,
 because user configurations can change the default `Ctrl-B` prefix.
 
 Before the first task to a new worker, inspect it with
