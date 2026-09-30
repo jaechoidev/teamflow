@@ -19,7 +19,7 @@ assert_contains "$(cat "$SK" 2>/dev/null)" "bash .agents/lib/delegator.sh task n
 # the skill checks first, and the check passes on this launcher
 assert_contains "$(cat "$SK" 2>/dev/null)" "./scripts/ai-team --help | grep -q -- --workers" "skill checks the launcher knows workers mode"
 assert_contains "$(cat "$SK" 2>/dev/null)" "accept \`scripts/ai-team.new\`" "skill says how to get a launcher with workers mode"
-bash "$TOOL/scripts/ai-team" --help 2>/dev/null | grep -q -- --workers; ok "the skill's launcher check passes here"
+assert_contains "$(bash "$TOOL/scripts/ai-team" --help 2>/dev/null)" "--workers" "the skill's launcher check passes here"
 assert_contains "$(cat "$SK" 2>/dev/null)" "same Delegator outside tmux" "skill reconciles the full-team role wording"
 assert_eq "0" "$(cat "$SK" "$TOOL/.agents/lib/delegator.sh" 2>/dev/null | grep -cF "$(printf '\342\200\224')" || true)" "no em dashes in the skill or helper"
 
