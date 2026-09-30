@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # delegator.sh: run task.sh or pane.sh as this repo's Delegator from any
 # terminal, e.g. a Codex, Claude, or z.ai session outside tmux while the
-# workers run under `scripts/ai-team up --workers`.
+# workers run under `scripts/teamflow up --workers`.
 #
 # Usage:
 #   delegator.sh task <task.sh args...>   e.g. task new dev-mid 'Title' <<'EOF'

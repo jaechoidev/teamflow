@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # task.sh — shared task mailbox for the ai-team workspace.
 #
-# Lives at .agents/lib/task.sh inside the project (copied by `ai-team init`).
+# Lives at .agents/lib/task.sh inside the project (copied by `teamflow init`).
 # State lives under the git COMMON dir (<repo>/.git/ai-team/) so every
 # worktree sees it immediately, without commits and without git-status noise.
 #
@@ -18,8 +18,10 @@
 #                             also completed tasks it dispatched
 #   list                      list all tasks (one line each)
 #   ack                       record that this role loaded its instructions
-#   clean [days]              prune done tasks older than N days (default 7);
-#                             delegator only — workers never delete records
+#   release <id> [commit]      delegator confirms result was read and any code
+#                             change integrated; queue the note pass
+#   noted <id> <summary>      notetaker finishes the note pass and removes the
+#                             completed task, then receives the next one
 #
 # Concurrency: one directory per task; creation is an atomic mkdir race;
 # claims likewise: `take` and `done` both gate on the task's claim/
@@ -32,7 +34,7 @@ set -u
 fail() { echo "task.sh: $*" >&2; exit 1; }
 
 AGENT_MAILBOX="${AGENT_MAILBOX:-}"
-[ -n "$AGENT_MAILBOX" ] || fail "AGENT_MAILBOX not set (launched by scripts/ai-team?)"
+[ -n "$AGENT_MAILBOX" ] || fail "AGENT_MAILBOX not set (launched by scripts/teamflow?)"
 TASKS="$AGENT_MAILBOX/tasks"
 ACKS="$AGENT_MAILBOX/acks"
 mkdir -p "$TASKS" "$ACKS" 2>/dev/null || fail "cannot write mailbox at $AGENT_MAILBOX"
@@ -44,14 +46,30 @@ json_str() { # render $1 as a JSON string literal (escape \ and ")
   s="${s//\"/\\\"}"
   printf '"%s"' "$s"
 }
-next_id() { # atomic: find first unused T-<counter> directory
-  local i=1 d
-  while :; do
-    d=$(printf 'T-%04d' "$i")
-    if mkdir "$TASKS/$d" 2>/dev/null; then echo "$d"; return 0; fi
-    i=$((i + 1))
-    [ "$i" -gt 9999 ] && fail "task id space exhausted"
+next_id() { # monotonic even after the notetaker removes completed records
+  local i=0 d tries=0 tmp
+  until mkdir "$AGENT_MAILBOX/id-lock" 2>/dev/null; do
+    tries=$((tries + 1))
+    [ "$tries" -lt 100 ] || fail "task id lock is busy"
+    sleep 0.1
   done
+  if [ -f "$AGENT_MAILBOX/next-id" ]; then
+    i=$(cat "$AGENT_MAILBOX/next-id")
+  else
+    for d in "$TASKS"/T-*; do
+      [ -d "$d" ] || continue
+      d="${d##*/}"; d="${d#T-}"
+      [ $((10#$d)) -gt "$i" ] && i=$((10#$d))
+    done
+    i=$((i + 1))
+  fi
+  [ "$i" -le 9999 ] || { rmdir "$AGENT_MAILBOX/id-lock"; fail "task id space exhausted"; }
+  d=$(printf 'T-%04d' "$i")
+  mkdir "$TASKS/$d" || { rmdir "$AGENT_MAILBOX/id-lock"; fail "cannot create $d"; }
+  tmp="$AGENT_MAILBOX/.next-id.$$"
+  echo $((i + 1)) > "$tmp" && mv "$tmp" "$AGENT_MAILBOX/next-id"
+  rmdir "$AGENT_MAILBOX/id-lock"
+  echo "$d"
 }
 
 cmd="${1:-}"; shift || true
@@ -170,22 +188,19 @@ case "$cmd" in
       "$(json_str "$(now)")" "$(json_str "$PWD")" > "$ACKS/$role.json"
     echo "acked: $role"
     ;;
-  clean)
-    # Deletion is the delegator's call alone: results stay readable after
-    # `done` (results are immutable there), and only retention pruning by
-    # the delegator ever removes a record.
-    [ "${AGENT_ROLE:-}" = "delegator" ] || fail "clean is restricted to the delegator (workers never delete task records)"
-    days="${1:-7}"
-    [ "$days" -gt 0 ] 2>/dev/null || fail "days must be a positive integer"
-    cutoff=$(date -v-${days}d +%s 2>/dev/null || date -d "-${days} days" +%s)
-    n=0
-    for d in "$TASKS"/T-*; do
-      [ -d "$d" ] || continue
-      [ "$(cat "$d/status" 2>/dev/null)" = "done" ] || continue
-      t=$(stat -f %m "$d" 2>/dev/null || stat -c %Y "$d" 2>/dev/null || echo 0)
-      if [ "$t" -lt "$cutoff" ]; then rm -rf "$d" && n=$((n + 1)); fi
-    done
-    echo "pruned $n done task(s) older than $days day(s)"
+  release)
+    id="${1:?usage: release <id> [integrated-commit]}"
+    [[ "$id" =~ ^T-[0-9]{4}$ ]] || fail "invalid task id: $id"
+    [ "${AGENT_ROLE:-}" = delegator ] || fail "release is restricted to the delegator"
+    [ "$(cat "$TASKS/$id/status" 2>/dev/null)" = done ] || fail "$id is not done"
+    [ ! -f "$TASKS/$id/released" ] || fail "$id is already released"
+    printf 'released: %s\nintegrated_commit: %s\n' "$(now)" "${2:-}" > "$TASKS/$id/released"
+    bash "$(dirname "$0")/note-queue.sh" poke
+    ;;
+  noted)
+    id="${1:?usage: noted <id> <summary>}"
+    summary="${2:?usage: noted <id> <summary>}"
+    bash "$(dirname "$0")/note-queue.sh" finish "$id" "$summary"
     ;;
   *)
     sed -n '2,10p' "$0" | sed 's/^# \{0,1\}//' >&2

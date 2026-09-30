@@ -1,72 +1,71 @@
-# ai-team — six-agent tmux workspace
+# teamflow - tmux workspace
 
-One command opens a tmux session with six persistent CLI agents in a fixed
-layout: a full-height Delegator on the left and five roles stacked down
-the right, each with its own role, a shared task mailbox, and (for the
-developers) dedicated git worktrees. Portable: any git repo can adopt it.
+In workers mode, the Delegator plans with the user in an external terminal.
+Configured workers and the optional Notetaker share one tmux window.
+The launcher also supports a full-team mode with the Delegator on the left
+and configured roles on the right. They share a task mailbox, and developers have
+dedicated git worktrees.
+Any git repo can adopt it.
 
 ```
-TOOL_HOME=/Users/jaechoi/code/tmux-base   # where this repo lives
-cd /path/to/your-project                  # the folder adopting the tool
-git init                                  # only when it is not a repo yet
-bash "$TOOL_HOME/scripts/ai-team" init    # scaffold the tool into it
-# fresh repo only (an existing committed repo skips both lines):
-git add ai-team.conf .agents scripts/ai-team AGENTS.md
-git commit -m "chore: adopt ai-team"
-./scripts/ai-team up                      # launch or reattach (the copy)
+cd /path/to/your-project
+teamflow start
 ```
 
-Run `init` from inside the repo you are adopting into, by path to this
-tool home, never from inside this repo to set up another project. If the
-target is a plain folder rather than a git repo, `git init` it first;
-skip that line for an existing repo. `init` copies `scripts/ai-team` and
-`.agents/` (roles, lib, doc templates, AGENTS-SECTION.md) into the
-target repo, writes `ai-team.conf` only when absent (yours to edit, and
-init never overwrites it), and updates only the marked AGENTS.md
-section. `up` then needs the repo to have at least one commit already (a
-fresh `git init` has none), so the fresh-repo step stages the scaffold
-paths only (`scripts/ai-team` by name, not all of `scripts/`), never
-`git add -A`. That first commit is a launcher requirement, not a Git
-limitation: role branches and worktrees are created from HEAD, and Git
-itself could make orphan worktrees even in an empty repo.
+The `teamflow` shell alias points to this repo's `scripts/teamflow`. Run
+`teamflow start` from the target folder. If the teamflow scaffold or Git history is
+missing, it runs `init` first. You can run `init` separately to prepare the
+project without launching workers. From this tool home, `init` creates a Git
+repository when needed. It copies
+`scripts/teamflow` and `.agents/` (roles, lib, doc templates,
+AGENTS-SECTION.md), writes `teamflow.conf` only when absent, and updates
+only the marked AGENTS.md section. If the repository has no commit, `init`
+makes a first commit containing only the teamflow scaffold. Existing staged
+or untracked project files stay outside that commit. Existing repositories
+with a commit are never committed by `init`. The first commit gives the
+launcher a HEAD for developer worktrees. `start` launches workers mode
+without attaching to the tmux session.
+
+For an existing project, run `init` again to receive the new role and queue
+files. Init keeps your `teamflow.conf`, so add the `[pane.notetaker]` section
+from this repo's config to enable a final Notetaker pane there.
 
 ## Pane map
 
-Left column (full height):
+In workers mode, the **Delegator and Planner** runs outside tmux. The
+default config stacks these six panes from top to bottom:
 
-1. **Delegator** — Codex (`gpt-6-sol`, medium), your interface
+1. **Researcher** - z.ai GLM (`glm-5.3`, max)
+2. **Reviewer** - Claude (`fable`, max)
+3. **Dev Senior** - Claude (`fable`, max)
+4. **Dev Mid** - Claude (`opus`, max)
+5. **Dev Junior** - z.ai GLM (`glm-5.3`, max)
+6. **Notetaker** - Claude (`opus`, xhigh), maintaining `docs/notes/`
 
-Right column (top to bottom):
+In full-team mode, the Delegator gets a full-height left pane. Configured
+worker roles stack in the right column. The two columns have equal width.
 
-1. **Researcher** — z.ai GLM (`glm-5.3`, max)
-2. **Reviewer & Planner** — Claude (`fable`, max)
-3. **Dev Senior** — Claude (`fable`, max)
-4. **Dev Mid** — Claude (`opus`, max)
-5. **Dev Junior** — z.ai GLM (`glm-5.3`, max)
-
-Equal-width columns.
-
-Models, CLIs, and effort levels are config, not code: edit `ai-team.conf`
+Models, CLIs, effort levels, and pane count come from `teamflow.conf`
 (one file, one `[pane.<role>]` section per pane, in layout order). The
 launcher never silently substitutes a model — if something is missing it
 says exactly what and where to fix it.
 
 ## Choosing a config
 
-`ai-team.conf` is the default. Every mode that reads a config takes
+`teamflow.conf` is the default. Every mode that reads a config takes
 another file with `--config`:
 
 ```
-./scripts/ai-team up --config <file>              # launch or reattach
-./scripts/ai-team up --no-attach --config <file>  # same, detached
-./scripts/ai-team --verify --config <file>
-./scripts/ai-team --check-models --config <file>
-./scripts/ai-team --kill --config <file>
+./scripts/teamflow up --config <file>              # launch or reattach
+./scripts/teamflow up --no-attach --config <file>  # same, detached
+./scripts/teamflow --verify --config <file>
+./scripts/teamflow --check-models --config <file>
+./scripts/teamflow --kill --config <file>
 ```
 
 Mode and flags go in any order, and `--config=<file>` works too. `init`
-takes no config. A variant is a complete config: the `[workspace]`
-section plus all six `[pane.<role>]` sections. Without `--config`
+takes no config. A variant has a `[workspace]` section and at least one
+worker pane. `[pane.notetaker]` is optional and must be last. Without `--config`
 everything behaves as before.
 
 **Paths.** An absolute path is used as given, and a leading `~/` means
@@ -93,14 +92,14 @@ launcher records the running session and the config that started it in
 Switching is always stop, then start:
 
 ```
-./scripts/ai-team --kill
-./scripts/ai-team up --config ai-team.claude.conf
+./scripts/teamflow --kill
+./scripts/teamflow up --config teamflow.claude.conf
 ```
 
 ### Example: a Claude Delegator
 
 ```
-cp ai-team.conf ai-team.claude.conf
+cp teamflow.conf teamflow.claude.conf
 ```
 
 Edit the Delegator section of the copy and leave the rest alone:
@@ -117,10 +116,10 @@ worktree = no
 Then check the models, stop the running team, and start the variant:
 
 ```
-./scripts/ai-team --check-models --config ai-team.claude.conf
-./scripts/ai-team --kill
-./scripts/ai-team up --config ai-team.claude.conf
-./scripts/ai-team --verify        # reports the running team and its config
+./scripts/teamflow --check-models --config teamflow.claude.conf
+./scripts/teamflow --kill
+./scripts/teamflow up --config teamflow.claude.conf
+./scripts/teamflow --verify        # reports the running team and its config
 ```
 
 A fresh Claude or z.ai Delegator gets the same handshake as the Codex
@@ -132,22 +131,22 @@ message.
 Conversations follow the CLI. The Claude Delegator starts its own
 conversation and never resumes the Codex id. The Codex entry is parked
 as `.git/ai-team/sessions/delegator.codex`, and the next launch with
-`ai-team.conf` resumes it. Roles whose `cli` is the same in both configs
+`teamflow.conf` resumes it. Roles whose `cli` is the same in both configs
 keep their conversations across the switch. The role table in AGENTS.md
 lists the default CLIs. Roles and routing are the same in every config.
 
 ## Workers mode (external Delegator)
 
 Run the Delegator yourself in any terminal, with Codex, Claude, or Claude
-routed to z.ai, and let the launcher start only the five workers:
+routed to z.ai, and let the launcher start the configured workers:
 
 ```
-./scripts/ai-team up --workers --no-attach   # prints the session name
+./scripts/teamflow start                    # prints the session name
 tmux attach -t <session>                     # watch the workers (optional)
 ```
 
-The workers stack top to bottom in one full-width column, with their
-usual models, worktrees, and conversation resume. `[pane.delegator]` is
+Configured workers and an optional Notetaker stack top to bottom in one full-width
+column, with their usual models, worktrees, and conversation resume. `[pane.delegator]` is
 ignored and may be left out. No Delegator pane or CLI starts, and nothing
 is typed into your session: results arrive in the mailbox. `--config`,
 `--verify`, and `--kill` work as for the full team. One team runs per
@@ -163,15 +162,14 @@ bash .agents/lib/delegator.sh task new dev-mid 'Title' <<'EOF'
 EOF
 bash .agents/lib/delegator.sh pane send-to dev-mid "Task T-0001: Title. Details: task.sh read T-0001"
 bash .agents/lib/delegator.sh task inbox delegator
-bash .agents/lib/delegator.sh task clean 7
+bash .agents/lib/delegator.sh task release T-0001 abc1234
+cat .git/ai-team/note-queue/completed/T-0001.md
 ```
 
-It refuses to run inside a worker pane. The portable `ai-team` skill in
-`skills/ai-team/SKILL.md` teaches a Codex or Claude session this
-workflow. It lives in the tool home, and `init` does not copy it. Install
-it once per host by linking or copying `skills/ai-team` into each CLI's
-skills directory, for example `~/.claude/skills/ai-team` and
-`~/.codex/skills/ai-team`.
+It refuses to run inside a worker pane. `init` copies the `teamflow`,
+`teamflow-resume`, and `teamflow-kill` skills from the tool home into the project's `.agents/skills/`
+for Codex and `.claude/skills/` for Claude Code. Re-running `init` preserves
+local skill edits and stages changed shipped files as `.new` for review.
 
 ## Prerequisites
 
@@ -186,13 +184,14 @@ skills directory, for example `~/.claude/skills/ai-team` and
 
 ## Daily use
 
-- **Launch/reattach**: `./scripts/ai-team up` (from anywhere inside the repo)
-- **Another config**: `./scripts/ai-team up --config <file>`, one team at
+- **Launch/reattach full team**: `./scripts/teamflow up` (from anywhere inside the repo)
+- **Another config**: `./scripts/teamflow up --config <file>`, one team at
   a time (see Choosing a config)
-- **Workers only**: `./scripts/ai-team up --workers`, with the Delegator in
+- **Workers only**: `./scripts/teamflow start`, with the Delegator in
   your own terminal (see Workers mode)
-- **Talk**: type to the Delegator (left pane); it dispatches to workers and
-  reports real results. You can also type directly into any worker pane.
+- **Talk**: in workers mode, plan with the Delegator in your terminal. It
+  turns the plan into tasks, dispatches them, and reports real results. In
+  full-team mode, use the left Delegator pane.
 - **Dispatch protocol**: tasks go through the mailbox — the Delegator does
   this for you via `task.sh new` + `pane.sh send-to`. Workers `take` →
   `done` (result in the task record). Nothing is ever typed into the
@@ -203,11 +202,14 @@ skills directory, for example `~/.claude/skills/ai-team` and
 - **Send text to a pane**: `bash .agents/lib/pane.sh send-to dev-mid "..."`
   (`... tail dev-mid` shows what's on screen — a CLI may be busy; delivery
   ≠ completion, the mailbox is the source of truth)
-- **Verify panes**: `./scripts/ai-team --verify` (liveness + role acks)
-- **Stop**: `./scripts/ai-team --kill` (session only; worktrees and branches
+- **Verify panes**: `./scripts/teamflow --verify` (liveness + role acks)
+- **Stop**: `./scripts/teamflow --kill` (session only; worktrees and branches
   stay, nothing is merged/pushed/deleted)
-- **Old task records**: `bash .agents/lib/task.sh clean [days]` (Delegator
-  only; prunes done tasks older than the given days)
+- **Note handoff**: after reading a result and integrating any code, the
+  Delegator runs `task.sh release <id> [integrated-commit]`. The Notetaker
+  reads the result and underlying evidence, updates notes, and runs
+  `task.sh noted <id> '<summary>'`. That removes the completed task record
+  and sends the next released task. No timer runs while it writes a note.
 
 ## Integrating approved work
 
@@ -239,8 +241,7 @@ git cherry-pick main..ai-team/dev-mid
 # git -C .ai-team-worktrees/dev-mid diff main...ai-team/dev-mid | git apply --3way
 # git commit -m "type(scope): subject for the whole task"
 
-# Verify before integrating the next role.
-bash tests/run_all.sh
+# Run the project's relevant checks before integrating the next role.
 
 # Optional: refresh the other roles' worktrees so later work rebases onto
 # the updated main and future patches apply cleanly. Rebase a role's
@@ -267,24 +268,27 @@ reviewed work enters main; nothing is pushed without your approval.
 - `.ai-team-worktrees/<role>` + branches `ai-team/<role>` — developer panes
   (created only if absent, never reset)
 - Repo-root `AGENTS.md` — shared coordination rules (marked section,
-  `ai-team init` owns only the markers)
+  `teamflow init` owns only the markers)
 - `.agents/doc-templates/` - note templates and the project notes workflow
 - `.agents/lib/delegator.sh` - runs `task.sh` and `pane.sh` as the
   Delegator from outside tmux (workers mode)
-- `skills/ai-team/` (tool home only) - the portable Delegator skill
+- `skills/teamflow/`, `skills/teamflow-resume/`, and `skills/teamflow-kill/` (tool home) - source skills
+- `.agents/skills/` and `.claude/skills/` (initialized projects) - repo-scoped copies of those skills
 
 ## Project notes
 
 `init` copies five plain Markdown templates into `.agents/doc-templates/`:
 source, concept, code map, decision, and experiment. They share one
 frontmatter convention with a review status, and the folder's README.md
-is the workflow. Using them is opt-in per project. Once adopted, the
-Delegator keeps notes (default `docs/notes/`) current with each
-implementation slice, workers supply evidence, and the user writes
+is the workflow. `teamflow up` creates `docs/notes/` and adopts the workflow.
+The Notetaker keeps notes current with each completed
+implementation slice, using worker results to find the relevant code,
+tests, discussion, and sources. The user writes
 own-words explanations and memory answers in concept notes. Notes link to
 Superpowers specs and plans rather than copying them. Obsidian is
 optional: open `docs/` as a vault to browse notes, specs, and plans
-together. Init never creates a vault or `docs/`.
+together. Init does not create a vault or `docs/`. Up creates the notes
+folder without configuring Obsidian.
 
 ## Conversation persistence
 
@@ -327,11 +331,10 @@ still wins):
   pane. Codex has no cheap probe; its model is verified at first use.
 - **First run in a new folder**: Codex shows a one-time "Trust this folder?"
   prompt — accept it once (per folder).
-- **Startup cost**: only the Delegator gets a startup message (its role
-  handshake). The five worker panes load their role via
-  `--append-system-prompt-file` (Claude/z.ai) — zero startup chat; a worker
-  acts only when first addressed. Acknowledgements appear in `--verify`
-  after each agent's first action.
+- **Startup cost**: the Delegator gets a role handshake. The Notetaker gets
+  a queue recovery handshake. The other worker panes load their role via
+  `--append-system-prompt-file` (Claude/z.ai) and act when first addressed.
+  The note queue uses no model calls while idle or while a note is in progress.
 - **Busy CLIs**: `send-to` types into a pane; if that CLI is mid-turn the
   text queues as input. Check `pane.sh tail <role>`, and rely on task
   records for outcomes.
@@ -353,17 +356,3 @@ still wins):
   Delegator pane: its startup prompt is worded for the Delegator, and id
   discovery goes by working directory. A variant that runs Codex in a
   worker role, or in two panes that share a directory, is untested.
-
-## Tests
-
-`bash tests/run_all.sh` covers layout order, role routing,
-environment handoff, worktrees, mailbox concurrency, send-to quoting and the
-Delegator pane guard, task claim and completion exclusivity, init
-idempotence, doc template propagation and conventions, reattach,
-diagnostics, conversation persistence (fresh IDs, resume after kill,
-rollover on missing transcripts, and role isolation), and config
-selection (argument parsing, path resolution, one team per repo,
-conversations across a CLI change, and the Delegator handshake), and
-workers mode (the five-pane column, dispatch from an external Delegator,
-resume, and one team per repo across modes).
-Tests use stub CLIs and an isolated tmux socket, with no model quota.

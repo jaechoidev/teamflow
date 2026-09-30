@@ -1,11 +1,10 @@
 # Project notes
 
-Opt-in templates for notes the team keeps current while it builds. Nothing
-changes in a project until the user adopts them. A project has adopted
-them once its notes folder exists or the user says so. Plain Markdown works
-in any editor, and Obsidian reads the frontmatter as properties. `ai-team
-init` copies this folder and, as with roles, stages a changed shipped file
-as `<file>.new` instead of overwriting yours.
+Templates for notes the team keeps current while it builds. `teamflow up`
+creates `docs/notes/` and adopts project notes. `teamflow init` copies this
+template folder and, as with roles, stages a changed shipped file as
+`<file>.new` instead of overwriting yours. Plain Markdown works in any editor,
+and Obsidian reads the frontmatter as properties.
 
 ## Templates
 
@@ -22,10 +21,9 @@ slice. Concept notes are the learning part.
 
 ## Creating a note
 
-Notes live in the main checkout, where the Delegator works. The default
-folder is `docs/notes/`. A project that uses another records it in
-AGENTS.md outside the ai-team markers. Use one file per note, named in
-kebab-case. `set -C` makes this refuse to overwrite an existing note:
+Notes live in the main checkout, where the Notetaker works, under
+`docs/notes/`. Use one file per note, named in kebab-case. `set -C` makes
+this refuse to overwrite an existing note:
 
 ```
 mkdir -p docs/notes
@@ -41,7 +39,8 @@ vault so notes sit beside Superpowers specs and plans. Its core Templates
 plugin fills `{{title}}` (with the file name) and `{{date}}` too, but it
 only reads templates inside the vault, so copy these files to
 `docs/templates/` to use it. Keep `docs/.obsidian/` out of commits unless
-the user wants shared settings. Init never creates a vault or `docs/`.
+the user wants shared settings. Init does not create a vault or `docs/`.
+`up` creates `docs/notes/` but does not configure Obsidian.
 
 ## Superpowers specs and plans
 
@@ -69,7 +68,7 @@ Every template starts with these properties, in this order:
 | `reviewed_on` | last review date |
 | `reviewed_commit` | commit the code claims were checked at, quoted: `"abc1234"` |
 | `superseded_by` | the replacement note: `"[[new-note]]"` |
-| `code_paths` | repo paths the claims depend on, e.g. `[scripts/ai-team]` |
+| `code_paths` | repo paths the claims depend on, e.g. `[scripts/teamflow]` |
 
 `source.md` adds `url`. Leave a value empty rather than guess.
 
@@ -87,18 +86,25 @@ Every template starts with these properties, in this order:
 A substantive edit changes a fact (a claim, number, path, decision, or
 result) in any section, own words included. Typos, formatting, links, and
 question wording are not substantive. When the user makes a substantive
-edit to a reviewed note, the Delegator sets `revised` on seeing it. Status
+edit to a reviewed note, the Notetaker sets `revised` on seeing it. Status
 tells readers how far to trust a note. It never blocks work.
 
 ## Per slice
 
-1. The worker's task result carries the evidence: changed paths, commit,
-   tests run and their results, and sources.
-2. The Delegator finds affected notes, e.g. `rg -l 'src/auth' docs/notes`.
-3. The Delegator updates or creates the notes, or dispatches the edit. New
-   notes start as `draft`. A substantive edit turns `reviewed` into
-   `revised`.
-4. Notes are tracked docs: commit changes only with the user's approval,
+1. The Delegator reads the completed task, reviews and integrates code, then
+   runs `task.sh release <id> [integrated-commit]`. The event-driven queue
+   sends one released task to the Notetaker. It does not poll while a note is
+   being written.
+2. The Notetaker reads the result and investigates its underlying code,
+   tests, commits, discussion, specs, plans, and original sources as needed.
+   Find affected notes, e.g. `rg -l 'src/auth' docs/notes`.
+3. Update or create notes from verified evidence. New notes start as `draft`.
+   A substantive edit turns `reviewed` into `revised`. If nothing durable
+   changed, record that in the completion summary.
+4. After saving files, run `task.sh noted <id> '<summary and note paths>'`.
+   This removes that completed task and sends the next released task. The
+   Delegator reads the summary under `.git/ai-team/note-queue/completed/`.
+5. Notes are tracked docs: commit changes only with the user's approval,
    ideally together with the slice they describe.
 
 ## Milestones (optional)
@@ -116,7 +122,9 @@ reviewed note changed since its review.
 
 ## Who does what
 
-- Delegator: keeps notes current and statuses honest.
+- Notetaker: investigates evidence, keeps notes current, and sets honest
+  statuses. In a legacy config without this role, the Delegator does this.
+- Delegator: releases verified work and reads the note completion summary.
 - Developers and Researcher: supply evidence in task results, and edit
   notes only when assigned.
 - Reviews: the Reviewer for code claims, the Researcher for sources, or the

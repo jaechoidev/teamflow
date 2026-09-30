@@ -19,7 +19,7 @@ set -u
 fail() { echo "pane.sh: $*" >&2; exit 1; }
 
 AGENT_MAILBOX="${AGENT_MAILBOX:-}"
-[ -n "$AGENT_MAILBOX" ] || fail "AGENT_MAILBOX not set (launched by scripts/ai-team?)"
+[ -n "$AGENT_MAILBOX" ] || fail "AGENT_MAILBOX not set (launched by scripts/teamflow?)"
 command -v tmux >/dev/null 2>&1 || fail "tmux not found"
 
 pane_of() { # $1 = role -> pane id (%N)

@@ -1,24 +1,26 @@
 #!/usr/bin/env bash
-# ai-team — portable six-agent tmux workspace launcher.
+# teamflow - portable tmux workspace launcher.
 #
 # Modes:
-#   scripts/ai-team init          scaffold this tool into the current git repo
-#                                 (.agents/, ai-team.conf if absent, AGENTS.md
-#                                 marked section, ./scripts/ai-team copy)
-#   scripts/ai-team up            launch (resumes role conversations) or reattach
-#   scripts/ai-team --verify      show pane liveness + role acknowledgements
-#   scripts/ai-team --check-models  probe configured models (spends a little
+#   scripts/teamflow init          create a git repo if needed, install the
+#                                 scaffold, and make the first scaffold commit
+#                                 when the repo has no commits
+#   scripts/teamflow start         initialize the project if needed, then launch
+#                                 configured worker panes detached
+#   scripts/teamflow up            launch (resumes role conversations) or reattach
+#   scripts/teamflow --verify      show pane liveness + role acknowledgements
+#   scripts/teamflow --check-models  probe configured models (spends a little
 #                                 quota; clean env, zai panes source zai_env)
-#   scripts/ai-team --kill        kill the workspace session
+#   scripts/teamflow --kill        kill the workspace session
 #
 # Flags:
-#   --config <file>  use this workspace config instead of ai-team.conf (up,
+#   --config <file>  use this workspace config instead of teamflow.conf (start, up,
 #                    --verify, --check-models, --kill). A relative path
 #                    resolves from the repo root, wherever you invoke from.
 #                    One team runs per repo: stop the running session with
 #                    --kill before starting another config.
-#   --no-attach      build detached (up only)
-#   --workers        up only: start the five workers in one column and no
+#   --no-attach      build detached (up only; start is always detached)
+#   --workers        up only: start the workers in one column and no
 #                    Delegator pane. The Delegator runs in your own terminal
 #                    and reaches the mailbox through .agents/lib/delegator.sh.
 #                    [pane.delegator] is ignored and may be absent.
@@ -27,7 +29,7 @@
 # Design notes:
 # - Everything is derived from the CURRENT repo (git rev-parse); no
 #   user-specific absolute paths are embedded. API keys never appear here:
-#   z.ai panes source the env file named in ai-team.conf ([workspace] zai_env).
+#   z.ai panes source the env file named in teamflow.conf ([workspace] zai_env).
 # - Model availability: binary presence is checked always; whether a MODEL id
 #   actually works for your account is only knowable live — use
 #   --check-models. Missing configuration is reported, never silently
@@ -40,8 +42,8 @@ set -u
 
 TOOL_HOME="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
-die() { echo "ai-team: $*" >&2; exit 1; }
-say() { echo "ai-team: $*" >&2; }
+die() { echo "teamflow: $*" >&2; exit 1; }
+say() { echo "teamflow: $*" >&2; }
 
 usage() { # the header comment, up to the design notes
   awk 'NR == 1 { next } /^# Design notes/ { exit } { sub(/^# ?/, ""); print }' "$0"
@@ -61,7 +63,7 @@ hint_path() { # $1 path $2 team root -> the path as a command line takes it
 }
 
 repo_root() {
-  git rev-parse --show-toplevel 2>/dev/null || die "not inside a git repository — cd into the target project (or run 'ai-team init' here after git init)"
+  git rev-parse --show-toplevel 2>/dev/null || die "not inside a git repository; run 'teamflow init' in the target folder first"
 }
 
 git_common_dir() { # absolute path to the shared .git dir (works in worktrees)
@@ -96,13 +98,17 @@ abs_path() { # canonical path: one file has one name, however it was spelled
   python3 -c 'import os, sys; print(os.path.realpath(sys.argv[1]))' "$1"
 }
 
+conf_hash() {
+  python3 -c 'import hashlib,sys; print(hashlib.sha256(open(sys.argv[1], "rb").read()).hexdigest())' "$1"
+}
+
 resolve_conf() { # $1 team root  $2 --config value ('' = default) -> config path
   local root="$1" arg="$2" p
   command -v python3 >/dev/null 2>&1 || die "python3 not found"
   if [ -z "$arg" ]; then
-    p="$root/ai-team.conf"
-    [ -f "$p" ] || p="$TOOL_HOME/ai-team.conf"
-    [ -f "$p" ] || die "no ai-team.conf (run: scripts/ai-team init)"
+    p="$root/teamflow.conf"
+    [ -f "$p" ] || p="$TOOL_HOME/teamflow.conf"
+    [ -f "$p" ] || die "no teamflow.conf (run: scripts/teamflow init)"
   else
     # Relative paths resolve from the repo root, never from the current
     # directory: the same spelling names the same file from a subdirectory
@@ -137,7 +143,7 @@ resolve_conf() { # $1 team root  $2 --config value ('' = default) -> config path
 TSV_SEP=$(printf '\037')
 
 # conf_read <conf-file> -> records on stdout, one per line, 0x1f-separated:
-#   workspace line: prefix SEP zai_env SEP ttl
+#   workspace line: prefix SEP zai_env
 #   one line per pane (in order): role SEP label SEP cli SEP model SEP effort SEP worktree
 conf_read() {
   python3 - "$1" <<'PY'
@@ -148,8 +154,7 @@ cp.read(sys.argv[1])
 w = cp["workspace"] if cp.has_section("workspace") else {}
 prefix = w.get("session_prefix", "at")
 zai_env = w.get("zai_env", "~/.zai/env.sh")
-ttl = w.get("task_ttl_days", "7")
-print(SEP.join([prefix, zai_env, ttl]))
+print(SEP.join([prefix, zai_env]))
 for sec in cp.sections():
     if not sec.startswith("pane."):
         continue
@@ -342,8 +347,8 @@ session_created() { # $1 session name -> creation stamp ('' when not running)
 }
 
 default_conf() { # $1 team root -> default config path ('' when there is none)
-  local p="$1/ai-team.conf"
-  [ -f "$p" ] || p="$TOOL_HOME/ai-team.conf"
+  local p="$1/teamflow.conf"
+  [ -f "$p" ] || p="$TOOL_HOME/teamflow.conf"
   [ -f "$p" ] || return 0
   abs_path "$p"
 }
@@ -418,12 +423,12 @@ refuse_other_config() {
   say "One team runs per repo: the mailbox and the role worktrees are shared. Stop the running session before switching configs or modes."
   case "$mode" in
     up)
-      say "  stop it:       scripts/ai-team --kill"
-      say "  then start:    scripts/ai-team up$(hint_mode "$rmode")$(hint_conf "$req" "$root" "$dconf")"
-      say "  or go back to the running team: scripts/ai-team up$(hint_mode "$ACTIVE_MODE")$(hint_conf "$ACTIVE_CONFIG" "$root" "$dconf")"
+      say "  stop it:       scripts/teamflow --kill"
+      say "  then start:    scripts/teamflow up$(hint_mode "$rmode")$(hint_conf "$req" "$root" "$dconf")"
+      say "  or go back to the running team: scripts/teamflow up$(hint_mode "$ACTIVE_MODE")$(hint_conf "$ACTIVE_CONFIG" "$root" "$dconf")"
       ;;
     *)
-      say "  $mode without --config acts on the running team: scripts/ai-team $mode"
+      say "  $mode without --config acts on the running team: scripts/teamflow $mode"
       ;;
   esac
   exit 1
@@ -458,32 +463,60 @@ follow_team() {
 # ---------- init ---------------------------------------------------------------
 
 cmd_init() {
-  local root src
-  root="$(repo_root)" || exit $?
+  local root src skills_src bootstrap=0
+  if root="$(git rev-parse --show-toplevel 2>/dev/null)"; then
+    :
+  else
+    root="$(pwd -P)"
+    git init -q -b main "$root" || die "cannot initialize git in $root"
+    say "created git repository in $root"
+  fi
+  git -C "$root" rev-parse --verify HEAD >/dev/null 2>&1 || bootstrap=1
   src="$TOOL_HOME"
+  skills_src="$src/skills"
+  [ -d "$skills_src" ] || skills_src="$src/.agents/skills"
   [ -f "$src/.agents/AGENTS-SECTION.md" ] || die "tool files incomplete at $src (missing .agents/AGENTS-SECTION.md)"
 
   mkdir -p "$root/.agents/roles" "$root/.agents/lib" "$root/.agents/doc-templates" "$root/scripts"
-  local f
+  local f skill rel scope
+  local -a scaffold=(teamflow.conf AGENTS.md scripts/teamflow .agents/AGENTS-SECTION.md \
+    .agents/lib/task.sh .agents/lib/pane.sh .agents/lib/delegator.sh .agents/lib/note-queue.sh)
   for f in "$src"/.agents/roles/*.md; do
     install_file "$f" "$root/.agents/roles/$(basename "$f")"
+    scaffold+=(".agents/roles/$(basename "$f")")
   done
   for f in "$src"/.agents/doc-templates/*.md; do
     install_file "$f" "$root/.agents/doc-templates/$(basename "$f")"
+    scaffold+=(".agents/doc-templates/$(basename "$f")")
+  done
+  for skill in teamflow teamflow-resume teamflow-kill; do
+    [ -f "$skills_src/$skill/SKILL.md" ] || die "tool files incomplete at $src (missing skills/$skill/SKILL.md)"
+    while IFS= read -r -d '' f; do
+      rel="${f#"$skills_src/$skill/"}"
+      for scope in .agents .claude; do
+        mkdir -p "$root/$scope/skills/$skill/$(dirname "$rel")"
+        install_file "$f" "$root/$scope/skills/$skill/$rel"
+        scaffold+=("$scope/skills/$skill/$rel")
+      done
+    done < <(find "$skills_src/$skill" -type f ! -name '*.new' -print0)
   done
   install_file "$src/.agents/lib/task.sh" "$root/.agents/lib/task.sh"
   install_file "$src/.agents/lib/pane.sh" "$root/.agents/lib/pane.sh"
   install_file "$src/.agents/lib/delegator.sh" "$root/.agents/lib/delegator.sh"
+  install_file "$src/.agents/lib/note-queue.sh" "$root/.agents/lib/note-queue.sh"
   install_file "$src/.agents/AGENTS-SECTION.md" "$root/.agents/AGENTS-SECTION.md"
-  install_file "$src/scripts/ai-team" "$root/scripts/ai-team"
-  chmod +x "$root/scripts/ai-team" "$root/.agents/lib/"*.sh
-  [ -f "$root/scripts/ai-team.new" ] && chmod +x "$root/scripts/ai-team.new"
+  install_file "$src/scripts/teamflow" "$root/scripts/teamflow"
+  chmod +x "$root/scripts/teamflow" "$root/.agents/lib/"*.sh
+  [ -f "$root/scripts/teamflow.new" ] && chmod +x "$root/scripts/teamflow.new"
 
-  if [ ! -f "$root/ai-team.conf" ]; then
-    cp "$src/ai-team.conf" "$root/ai-team.conf"
-    say "wrote ai-team.conf (user-owned: edit models/panes here; init never overwrites it)"
+  if [ ! -e "$root/teamflow.conf" ]; then
+    cp "$src/teamflow.conf" "$root/teamflow.conf"
+    say "wrote teamflow.conf (user-owned: edit models/panes here; init never overwrites it)"
   else
-    say "ai-team.conf already present — left untouched"
+    say "teamflow.conf already present — left untouched"
+    if ! grep -q '^\[pane\.notetaker\]' "$root/teamflow.conf"; then
+      say "add [pane.notetaker] from $src/teamflow.conf to enable a final Notetaker pane"
+    fi
   fi
 
   # AGENTS.md marked section: replace if present, else append; never touch
@@ -504,7 +537,28 @@ PY
   ensure_exclude "$common" ".ai-team-worktrees/"
 
   say "initialized in $root"
-  echo "next: edit ai-team.conf if needed, then run ./scripts/ai-team up" >&2
+  if [ "$bootstrap" = 1 ]; then
+    git -C "$root" add -- "${scaffold[@]}" \
+      || die "could not stage the teamflow scaffold; finish the first commit manually"
+    git -C "$root" commit --only -m 'chore: initialize teamflow' -- "${scaffold[@]}" \
+      || die "could not commit the teamflow scaffold; finish the first commit manually"
+    say "created first commit with teamflow scaffold only"
+  fi
+  echo "next: edit teamflow.conf if needed, then run ./scripts/teamflow start" >&2
+}
+
+# ---------- start --------------------------------------------------------------
+
+cmd_start() { # $1 --config value ('' = default config)
+  local root=""
+  root="$(git rev-parse --show-toplevel 2>/dev/null)" || root=""
+  if [ -z "$root" ] || [ ! -f "$root/scripts/teamflow" ] \
+     || [ ! -f "$root/.agents/lib/delegator.sh" ] \
+     || [ ! -f "$root/teamflow.conf" ] \
+     || ! git -C "$root" rev-parse --verify HEAD >/dev/null 2>&1; then
+    cmd_init
+  fi
+  cmd_up 0 "$1" 1
 }
 
 # ---------- up -----------------------------------------------------------------
@@ -519,15 +573,11 @@ cmd_up() { # $1 attach (1|0)  $2 --config value ('' = default config)  $3 worker
   local root conf
   root="$(team_root)" || exit $?
   conf="$(resolve_conf "$root" "$conf_arg")" || exit $?
-  local confdesc="tool-home"
-  [ "$conf" = "$(abs_path "$root/ai-team.conf")" ] && confdesc="project"
-  [ -n "$conf_arg" ] && confdesc="--config"
 
-  local confout prefix zai_env_raw ttl
+  local confout prefix zai_env_raw
   confout="$(conf_read "$conf")" || die "cannot parse $conf"
   prefix="$(printf '%s' "$confout"   | head -1 | cut -d "$TSV_SEP" -f1)"
   zai_env_raw="$(printf '%s' "$confout" | head -1 | cut -d "$TSV_SEP" -f2)"
-  ttl="$(printf '%s' "$confout"      | head -1 | cut -d "$TSV_SEP" -f3)"
   local zai_env="${zai_env_raw/#\~/$HOME}"
 
   local sess
@@ -543,6 +593,19 @@ cmd_up() { # $1 attach (1|0)  $2 --config value ('' = default config)  $3 worker
   if [ -n "$ACTIVE_SESSION" ]; then
     [ "$ACTIVE_CONFIG" = "$conf" ] && [ "$ACTIVE_MODE" = "$team_mode" ] \
       || refuse_other_config up "$conf" "$root" "$dconf" "$team_mode"
+    local saved_hash configured_roles running_roles
+    saved_hash="$(team_get "$mailbox" CONFIG_HASH)"
+    if [ -n "$saved_hash" ]; then
+      [ "$saved_hash" = "$(conf_hash "$conf")" ] \
+        || die "config $conf changed while $ACTIVE_SESSION is running; run teamflow --kill, then teamflow start to apply it"
+    else
+      configured_roles="$(printf '%s' "$confout" | tail -n +2 | cut -d "$TSV_SEP" -f1)"
+      [ "$team_mode" = workers ] && configured_roles="$(printf '%s\n' "$configured_roles" | sed '/^delegator$/d')"
+      running_roles="$(cut -f1 "$mailbox/panes.tsv" 2>/dev/null)"
+      [ "$configured_roles" = "$running_roles" ] \
+        || die "configured panes differ from running session $ACTIVE_SESSION; run teamflow --kill, then teamflow start to apply them"
+    fi
+    mkdir -p "$root/docs/notes" || die "cannot create project notes at $root/docs/notes"
     sess="$ACTIVE_SESSION"
     say "session $sess already running — reattaching (no duplicate launched)"
     [ "$mode_attach" = 1 ] && exec tmux attach-session -t "=$sess"
@@ -551,20 +614,32 @@ cmd_up() { # $1 attach (1|0)  $2 --config value ('' = default config)  $3 worker
   fi
 
   # ---- preflight: config + CLIs (fail before creating anything) -------------
-  local tsv roles="" missing=""
+  local tsv roles="" missing="" note_tsv="" worker_count
   tsv="$(printf '%s' "$confout" | tail -n +2)"
   if [ "$team_mode" = workers ]; then
     # The Delegator runs outside tmux: its section is neither checked nor
     # started, and its registry entry is never touched.
     tsv="$(printf '%s\n' "$tsv" | awk -F "$TSV_SEP" '$1 != "delegator"')"
-    [ "$(printf '%s' "$tsv" | grep -c .)" -eq 5 ] \
-      || die "expected 5 worker [pane.*] sections (all but delegator) in $conf ($confdesc), found $(printf '%s' "$tsv" | grep -c .)"
   else
-    [ "$(printf '%s' "$tsv" | grep -c .)" -eq 6 ] \
-      || die "expected 6 [pane.*] sections in $conf ($confdesc), found $(printf '%s' "$tsv" | grep -c .)"
+    [ "$(printf '%s\n' "$tsv" | head -1 | cut -d "$TSV_SEP" -f1)" = delegator ] \
+      || die "full-team mode requires [pane.delegator] first in $conf"
   fi
+  note_tsv="$(printf '%s\n' "$tsv" | awk -F "$TSV_SEP" '$1 == "notetaker"')"
+  if [ -n "$note_tsv" ]; then
+    [ "$(printf '%s\n' "$tsv" | tail -1 | cut -d "$TSV_SEP" -f1)" = notetaker ] \
+      || die "[pane.notetaker] must be last in $conf"
+    [ -f "$root/.agents/lib/note-queue.sh" ] \
+      || die "notetaker queue missing; run teamflow init to install .agents/lib/note-queue.sh"
+  fi
+  worker_count="$(printf '%s\n' "$tsv" | awk -F "$TSV_SEP" '$1 != "delegator" && $1 != "notetaker"' | grep -c .)"
+  [ "$worker_count" -gt 0 ] \
+    || die "config must include at least one worker pane in $conf"
 
   while IFS="$TSV_SEP" read -r role label cli model effort worktree; do
+    case "$role" in
+      delegator|researcher|reviewer|dev-senior|dev-mid|dev-junior|notetaker) ;;
+      *) die "unknown pane role '$role' in $conf" ;;
+    esac
     roles="$roles $role"
     [ -n "$cli" ] || die "[$role] cli is empty in $conf"
     case "$cli" in
@@ -584,6 +659,9 @@ EOF
   # the literal word HEAD (rc 128), which the old -n test mistook for a ref.
   git -C "$root" rev-parse --verify --quiet HEAD >/dev/null 2>&1 \
     || die "repo has no commits yet — make an initial commit first (worktrees need HEAD)"
+
+  # Starting the team adopts project notes. Keep init side effect free here.
+  mkdir -p "$root/docs/notes" || die "cannot create project notes at $root/docs/notes"
 
   # Resolve CLIs to absolute paths NOW: pane shells may rewrite PATH
   # (e.g. ~/.zshenv prepending ~/.local/bin), which would otherwise swap the
@@ -638,13 +716,17 @@ AGENT_ROLE_FILE=$qfile AGENT_MAILBOX=$qmailbox AGENT_LIB_DIR=$qlib;"
     # reports READY by itself, whatever CLI runs it. claude and zai carry
     # the role file in the system prompt, so their first message skips it
     # (codex has no such flag and gets the file named in its prompt below).
-    # Workers get no message and idle until addressed. A resumed
+    # Workers get no message and idle until addressed. The notetaker
+    # checks the note queue after boot, including after a restart. A resumed
     # conversation has had its handshake. The message is quoted as a whole:
     # it reaches the CLI as one argument whatever the paths contain.
     local hello=""
     if [ "$prole" = delegator ] && [ "$pmode" != resume ]; then
       hello=" $(shell_quote "You are the team Delegator. Your role file is loaded in the system prompt. \
 Read AGENTS.md in $(shell_quote "$pcwd"), run: bash $qlib/task.sh ack, and reply READY only.")"
+    fi
+    if [ "$prole" = notetaker ]; then
+      hello=" $(shell_quote "You are the team Notetaker. Read your role file and AGENTS.md, then run: bash $qlib/task.sh ack; bash $qlib/note-queue.sh resume. Reply READY only if no note task is waiting.")"
     fi
     case "$pcli" in
       codex)
@@ -662,8 +744,7 @@ Read AGENTS.md in $(shell_quote "$pcwd"), run: bash $qlib/task.sh ack, and reply
           base="$bin resume $(shell_quote "$psid") --dangerously-bypass-approvals-and-sandbox -m $(shell_quote "$pmodel") $qeff -C $(shell_quote "$pcwd")"
         else
           base="$bin --dangerously-bypass-approvals-and-sandbox -m $(shell_quote "$pmodel") $qeff \
-\"You are the team Delegator. Read $(shell_quote "$pfile") and adopt the role. \
-Then read AGENTS.md in $(shell_quote "$pcwd"), run: bash $qlib/task.sh ack, and reply READY only.\""
+$(shell_quote "You are the team $prole. Read $pfile and AGENTS.md in $pcwd. Run: bash $qlib/task.sh ack. $([ "$prole" = notetaker ] && printf 'Then run: bash %s/note-queue.sh resume.' "$qlib") Reply READY only if no task is waiting.")"
         fi
         ;;
       claude)
@@ -738,23 +819,17 @@ EOF
     comm -13 <(printf '%s\n' "$1") <(pane_ids_of) | head -1
   }
 
-  # Layout (T-0052): two equal-width columns. The Delegator stays alone at
-  # full height on the left; the other five roles stack down the right in
-  # config order. p0 is split -h once (order 1, researcher, becomes the
-  # right-column top pane p1), then the right column cascades downward on
-  # the bottom carrier with 80/75/67/50 splits (orders 2-5 into p2..p5),
-  # which keeps every carrier large enough to continue (a naive 50/50
-  # cascade runs out of pane). Sequential percent splits leave a 1..2-line
-  # height spread, so exact content heights are set afterwards by
-  # resize-pane (custom select-layout strings are rejected by this tmux
-  # build).
+  # Full mode keeps the Delegator on the left. Configured worker panes stack
+  # in order in the right column. Workers mode uses the whole window. Each
+  # split leaves one share for the current pane and the remaining shares for
+  # panes still to come. Exact heights are adjusted below.
   local before pid
   tmux new-session -d -s "$sess" -n team -c "${order_cwds[0]}" "${order_cmds[0]}"
   tmux has-session -t "=$sess" 2>/dev/null \
     || die "pane boot failed: '${order_roles[0]}' exited immediately (session rolled back). Run its pane command by hand to see why — common causes: invalid model id, CLI auth/config error."
   team_write "$mailbox" "SESSION=$sess" "CREATED=$(session_created "$sess")" \
-    "CONFIG=$conf" "ROOT=$root" "STARTED_AT=$(now_utc)" "MODE=$team_mode"
-  local p0 p1 p2 p3 p4 p5
+    "CONFIG=$conf" "CONFIG_HASH=$(conf_hash "$conf")" "ROOT=$root" "STARTED_AT=$(now_utc)" "MODE=$team_mode"
+  local p0
   p0="$(pane_ids_of)"
   tmux rename-window -t "=$sess" "team"
   tmux set-window-option -t "=$sess" remain-on-exit on >/dev/null
@@ -773,72 +848,64 @@ EOF
     tmux set-environment -u -t "=$sess" "$v" 2>/dev/null
   done
 
-  # pane ids in conf/role order (one per split step): the die message and
-  # the role->pane registry map by role, not by split order. col holds the
-  # five-pane column that gets equal heights.
+  # Pane ids follow config order. col holds the worker column for sizing.
   local -a role_pids col
+  local carrier new_pid pane_index remaining percent pane_total
+  pane_total=${#order_cmds[@]}
+  if [ -n "$note_tsv" ]; then
+    rm -f "$mailbox/acks/notetaker.json"
+  fi
   if [ "$team_mode" = workers ]; then
-    # Workers mode: no Delegator pane. The five workers fill one full-width
-    # column top to bottom in config order, grown from p0 with the same
-    # 80/75/67/50 cascade as the full team's right column.
-    before="$(pane_ids_of)"
-    tmux split-window -d -v -p 80 -t "$p0" -c "${order_cwds[1]}" "${order_cmds[1]}"
-    p1="$(diff_new_pane "$before")"
-
-    before="$(pane_ids_of)"
-    tmux split-window -d -v -p 75 -t "$p1" -c "${order_cwds[2]}" "${order_cmds[2]}"
-    p2="$(diff_new_pane "$before")"
-
-    before="$(pane_ids_of)"
-    tmux split-window -d -v -p 67 -t "$p2" -c "${order_cwds[3]}" "${order_cmds[3]}"
-    p3="$(diff_new_pane "$before")"
-
-    before="$(pane_ids_of)"
-    tmux split-window -d -v -p 50 -t "$p3" -c "${order_cwds[4]}" "${order_cmds[4]}"
-    p4="$(diff_new_pane "$before")"
-    col=("$p0" "$p1" "$p2" "$p3" "$p4")
+    col=("$p0")
+    carrier="$p0"
+    for ((pane_index = 1; pane_index < pane_total; pane_index++)); do
+      remaining=$((pane_total - pane_index))
+      percent=$((remaining * 100 / (remaining + 1)))
+      before="$(pane_ids_of)"
+      tmux split-window -d -v -p "$percent" -t "$carrier" \
+        -c "${order_cwds[$pane_index]}" "${order_cmds[$pane_index]}" \
+        || die "could not create pane for ${order_roles[$pane_index]}"
+      new_pid="$(diff_new_pane "$before")"
+      col+=("$new_pid")
+      carrier="$new_pid"
+    done
     role_pids=("${col[@]}")
   else
     before="$(pane_ids_of)"
     tmux split-window -d -h -p 50 -t "$p0" -c "${order_cwds[1]}" "${order_cmds[1]}"
-    p1="$(diff_new_pane "$before")"
-
-    before="$(pane_ids_of)"
-    tmux split-window -d -v -p 80 -t "$p1" -c "${order_cwds[2]}" "${order_cmds[2]}"
-    p2="$(diff_new_pane "$before")"
-
-    before="$(pane_ids_of)"
-    tmux split-window -d -v -p 75 -t "$p2" -c "${order_cwds[3]}" "${order_cmds[3]}"
-    p3="$(diff_new_pane "$before")"
-
-    before="$(pane_ids_of)"
-    tmux split-window -d -v -p 67 -t "$p3" -c "${order_cwds[4]}" "${order_cmds[4]}"
-    p4="$(diff_new_pane "$before")"
-
-    before="$(pane_ids_of)"
-    tmux split-window -d -v -p 50 -t "$p4" -c "${order_cwds[5]}" "${order_cmds[5]}"
-    p5="$(diff_new_pane "$before")"
-    col=("$p1" "$p2" "$p3" "$p4" "$p5")
+    carrier="$(diff_new_pane "$before")"
+    col=("$carrier")
+    for ((pane_index = 2; pane_index < pane_total; pane_index++)); do
+      remaining=$((pane_total - pane_index))
+      percent=$((remaining * 100 / (remaining + 1)))
+      before="$(pane_ids_of)"
+      tmux split-window -d -v -p "$percent" -t "$carrier" \
+        -c "${order_cwds[$pane_index]}" "${order_cmds[$pane_index]}" \
+        || die "could not create pane for ${order_roles[$pane_index]}"
+      new_pid="$(diff_new_pane "$before")"
+      col+=("$new_pid")
+      carrier="$new_pid"
+    done
     role_pids=("$p0" "${col[@]}")
   fi
 
-  # Exact equal sizing, grammar-free: resize the top four column panes to a
+  # Exact equal sizing, grammar-free: resize the column panes to a
   # computed content height; tmux redistributes within the column only.
-  # The pane grid is wh-1 (the border-status line); the five column panes
-  # share grid-4 content lines, any remainder spread one line at a time
+  # The pane grid is wh-1 (the border-status line); the column panes
+  # share the remaining content lines, with any remainder spread one at a time
   # from the top. In the full team the delegator keeps the full grid
   # height. Below a sane minimum, leave the proportional splits in place.
-  local ww wh grid rbase rrem
+  local ww wh grid rbase rrem n j
   ww=$(tmux display-message -p -t "$p0" '#{window_width}')
   wh=$(tmux display-message -p -t "$p0" '#{window_height}')
   grid=$((wh - 1))
-  if [ "${ww:-0}" -ge 20 ] && [ "$grid" -ge 10 ]; then
-    rbase=$(( (grid - 4) / 5 ))
-    rrem=$(( (grid - 4) - rbase * 5 ))
-    tmux resize-pane -t "${col[0]}" -y $(( rbase + (rrem > 0 ? 1 : 0) )) 2>/dev/null
-    tmux resize-pane -t "${col[1]}" -y $(( rbase + (rrem > 1 ? 1 : 0) )) 2>/dev/null
-    tmux resize-pane -t "${col[2]}" -y $(( rbase + (rrem > 2 ? 1 : 0) )) 2>/dev/null
-    tmux resize-pane -t "${col[3]}" -y $(( rbase + (rrem > 3 ? 1 : 0) )) 2>/dev/null
+  n=${#col[@]}
+  if [ "${ww:-0}" -ge 20 ] && [ "$grid" -ge $((n * 2)) ]; then
+    rbase=$(( (grid - n + 1) / n ))
+    rrem=$(( (grid - n + 1) - rbase * n ))
+    for ((j = 0; j < n - 1; j++)); do
+      tmux resize-pane -t "${col[$j]}" -y $(( rbase + (rrem > j ? 1 : 0) )) 2>/dev/null
+    done
   fi
   local _pid _i=0
   for _pid in "${role_pids[@]}"; do
@@ -887,6 +954,13 @@ EOF
 $tsv
 EOF
 
+  # The Notetaker can acknowledge before the pane registry is written. Its
+  # startup resume leaves the task queued in that case. Poke once now, after
+  # registry publication, without duplicating an already active task.
+  if [ -n "$note_tsv" ]; then
+    AGENT_MAILBOX="$mailbox" bash "$root/.agents/lib/note-queue.sh" poke
+  fi
+
   say "workspace up: $sess"
   say "config: $conf"
   if [ "$team_mode" = workers ]; then
@@ -911,7 +985,7 @@ team_confout() {
     [ -f "$T_CONF" ] || die "config file not found: $T_CONF (session $ACTIVE_SESSION was started with it)"
     conf_read "$T_CONF" || die "cannot parse $T_CONF"
   else
-    conf_read "${T_CONF:-$1/ai-team.conf}" 2>/dev/null || conf_read "$TOOL_HOME/ai-team.conf"
+    conf_read "${T_CONF:-$1/teamflow.conf}" 2>/dev/null || conf_read "$TOOL_HOME/teamflow.conf"
   fi
 }
 
@@ -1038,20 +1112,20 @@ pick_mode() {
 
 while [ $# -gt 0 ]; do
   case "$1" in
-    init|up|--verify|--check-models|--kill) pick_mode "$1" ;;
+    init|start|up|--verify|--check-models|--kill) pick_mode "$1" ;;
     --no-attach) NO_ATTACH=1 ;;
     --workers) WORKERS=1 ;;
     --config|--config=*)
       [ "$CONFIG_GIVEN" = 0 ] || die "--config given more than once"
       if [ "$1" = "--config" ]; then
-        [ $# -ge 2 ] || die "--config requires a file path (e.g. --config ai-team.claude.conf)"
+        [ $# -ge 2 ] || die "--config requires a file path (e.g. --config teamflow.claude.conf)"
         shift
         CONFIG="$1"
       else
         CONFIG="${1#--config=}"
       fi
       case "$CONFIG" in
-        ""|-*) die "--config requires a file path, got '$CONFIG' (e.g. --config ai-team.claude.conf)" ;;
+        ""|-*) die "--config requires a file path, got '$CONFIG' (e.g. --config teamflow.claude.conf)" ;;
       esac
       CONFIG_GIVEN=1
       ;;
@@ -1062,15 +1136,16 @@ while [ $# -gt 0 ]; do
 done
 
 MODE="${MODE:-up}"
-[ "$NO_ATTACH" = 0 ] || [ "$MODE" = up ] \
-  || die "--no-attach applies to up only, not to $MODE"
-[ "$WORKERS" = 0 ] || [ "$MODE" = up ] \
-  || die "--workers applies to up only, not to $MODE (--verify and --kill follow the running team)"
+[ "$NO_ATTACH" = 0 ] || [ "$MODE" = up ] || [ "$MODE" = start ] \
+  || die "--no-attach applies to start or up only, not to $MODE"
+[ "$WORKERS" = 0 ] || [ "$MODE" = up ] || [ "$MODE" = start ] \
+  || die "--workers applies to start or up only, not to $MODE (--verify and --kill follow the running team)"
 [ "$CONFIG_GIVEN" = 0 ] || [ "$MODE" != init ] \
-  || die "--config does not apply to init, which reads no config. Pass it to up, --verify, --check-models, or --kill"
+  || die "--config does not apply to init, which reads no config. Pass it to start, up, --verify, --check-models, or --kill"
 
 case "$MODE" in
   init)           cmd_init ;;
+  start)          cmd_start "$CONFIG" ;;
   up)             cmd_up "$((1 - NO_ATTACH))" "$CONFIG" "$WORKERS" ;;
   --verify)       cmd_verify "$CONFIG" ;;
   --check-models) cmd_check_models "$CONFIG" ;;

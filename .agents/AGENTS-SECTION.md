@@ -1,18 +1,24 @@
 # >>> ai-team >>>
-# Managed by `ai-team init` — edit roles in .agents/roles/, coordination here.
+# Managed by `teamflow init` — edit roles in .agents/roles/, coordination here.
 
 ## AI team workspace
 
-This repository runs a six-agent tmux workspace (`scripts/ai-team`).
+In workers mode, the Delegator runs in the user's Codex terminal outside
+tmux. Configured workers and the optional Notetaker share one tmux window.
+The Notetaker is last when present.
 
-| Pane | Role ID | CLI | Default work |
+The table shows the default configuration. `teamflow.conf` controls which
+worker roles run and their pane order.
+
+| Location | Role ID | CLI | Default work |
 | --- | --- | --- | --- |
-| left | `delegator` | Codex | user interface; dispatch + summarize |
-| right-1 | `researcher` | z.ai GLM | external research, citations, options |
-| right-2 | `reviewer` | Claude | plans, architecture, reviews |
-| right-3 | `dev-senior` | Claude | complex/perf/architecture-sensitive code |
-| right-4 | `dev-mid` | Claude | ordinary features/fixes/tests |
-| right-5 | `dev-junior` | z.ai GLM | bounded tasks, tests, docs |
+| External terminal | `delegator` | Codex | plan with user; dispatch + summarize |
+| Workers window, pane 1 | `researcher` | z.ai GLM | external research, citations, options |
+| Workers window, pane 2 | `reviewer` | Claude | review plans, architecture, and code |
+| Workers window, pane 3 | `dev-senior` | Claude | complex/perf/architecture-sensitive code |
+| Workers window, pane 4 | `dev-mid` | Claude | ordinary features/fixes/tests |
+| Workers window, pane 5 | `dev-junior` | z.ai GLM | bounded tasks, tests, docs |
+| Workers window, pane 6 | `notetaker` | Claude | investigate evidence and maintain project notes |
 
 Rules:
 - Workers act only when the user or the delegator assigns a task. No
@@ -20,10 +26,12 @@ Rules:
 - All coordination goes through the mailbox (`$AGENT_MAILBOX`, under
   `.git/ai-team/`): `bash "$AGENT_LIB_DIR/task.sh" new|take|done|read|status|inbox|ack`.
 - Results are read from task records, never assumed from pane text.
-- Nothing is ever typed into the Delegator pane: `pane.sh send-to delegator`
+- Nothing is ever typed into the Delegator session: `pane.sh send-to delegator`
   is rejected; completions surface via `task.sh inbox delegator`.
-- Only the Delegator deletes task records (`task.sh clean`); `done` keeps
-  results readable.
+- `done` keeps results readable. After review and integration, the Delegator
+  runs `task.sh release <id> [commit]`. The Notetaker investigates one
+  released task at a time, then runs `task.sh noted <id> <summary>` to remove
+  that task record and receive the next one.
 - Developers work in separate worktrees (`.ai-team-worktrees/<role>`,
   branches `ai-team/<role>`). Avoid overlapping concurrent edits; coordinate scope.
 - The Delegator integrates each task commit after Reviewer approval, or after
@@ -31,12 +39,15 @@ Rules:
   check. It inspects the full diff, verifies the change, and reports the
   evidence. Broader or unclear changes go to Reviewer. This review and
   integration flow has the user's approval; pushes still require approval.
-- Task records are scratch. Promote durable decisions/docs into tracked
-  files only with user approval.
-- Project notes are opt-in. Once the user adopts them, they follow
-  `.agents/doc-templates/README.md` (default folder `docs/notes/`). The
-  Delegator keeps them current with each slice. Other roles supply evidence
-  in task results and edit notes only when assigned. Agents may propose
-  memory questions. Only the user writes own-words explanations and answers.
+- Task records are scratch. Starting teamflow authorizes project notes.
+  Promote other durable decisions/docs into tracked files only with user
+  approval.
+- `teamflow start` creates `docs/notes/` and adopts project notes. They follow
+  `.agents/doc-templates/README.md`. The Notetaker reads task results as
+  triggers, then checks code, tests, discussions, decisions, and original
+  sources for the relevant note types. The Delegator reads its note summary
+  before reporting a slice. Other roles supply evidence in task results.
+  Agents may propose memory questions. Only the user writes own-words
+  explanations and answers.
 - Keep task logs concise; never put secrets in them.
 # <<< ai-team <<<
