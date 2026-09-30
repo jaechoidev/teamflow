@@ -18,9 +18,16 @@
 #   scripts/teamflow worktrees list|merge <id>|discard <id>  merge a stopped
 #                                 worker's work into the current branch, or
 #                                 discard its worktree, branch, and changes
-#   scripts/teamflow workers list|add|remove|sync  manage worker instances. While
-#                                 a team runs, add and remove change this
-#                                 session only. --save also updates the config.
+#   scripts/teamflow types         list the worker types the config offers
+#   scripts/teamflow add <type-or-id>  add a worker to this session. With no
+#                                 team running, it starts one with that worker
+#   scripts/teamflow remove <id>   remove a worker from this session
+#   scripts/teamflow list|sync     show the roster, or repair the running windows
+#                                 (add, remove, list, and sync are short for
+#                                 workers add|remove|list|sync. --save on add or
+#                                 remove also updates the default team)
+#   scripts/teamflow trim          remove idle workers. When every worker is
+#                                 idle, stop the team like --kill
 #
 # Flags:
 #   --config <file>  use this workspace config instead of teamflow.conf (start, up,
@@ -31,6 +38,7 @@
 #   --no-attach      build detached (up only; start is always detached)
 #   --only <worker>  start or up: launch a team with just this worker, given as
 #                    an instance ID or a type. The config stays the default team.
+#   --last           start or up: bring back the last session's workers
 #   --workers        up only: start tiled worker panes without a
 #                    Delegator pane. The Delegator runs in your own terminal
 #                    and reaches the mailbox through .agents/lib/delegator.sh.
@@ -186,6 +194,14 @@ ensure_exclude() { # $1 common-dir  $2 pattern — keep runtime state out of git
 # Native API-key-env users: put your key in `claude`'s own config, not the
 # environment, or extend this list.
 CLAUDE_ROUTING_VARS="ANTHROPIC_BASE_URL ANTHROPIC_AUTH_TOKEN ANTHROPIC_API_KEY ANTHROPIC_MODEL ANTHROPIC_SMALL_FAST_MODEL ANTHROPIC_DEFAULT_HAIKU_MODEL ANTHROPIC_DEFAULT_SONNET_MODEL ANTHROPIC_DEFAULT_OPUS_MODEL ANTHROPIC_CUSTOM_HEADERS API_TIMEOUT_MS"
+
+worker_window() { # $1 pane id: a worker's window keeps its ID as its name,
+  # stays visible after the CLI exits, and flags new output in the status bar.
+  tmux set-window-option -t "$1" remain-on-exit on >/dev/null
+  tmux set-window-option -t "$1" automatic-rename off >/dev/null
+  tmux set-window-option -t "$1" allow-rename off >/dev/null
+  tmux set-window-option -t "$1" monitor-activity on >/dev/null
+}
 
 install_scaffold() { # $1 root -> installed project paths on stdout
   # Unmodified copies follow the tool home. Local edits win, and the shipped
@@ -557,7 +573,7 @@ PY
 
 # ---------- start --------------------------------------------------------------
 
-cmd_start() { # $1 --config value ('' = default config)  $2 --only value
+cmd_start() { # $1 --config value ('' = default config)  $2 --only value  $3 --last (1|0)
   local root=""
   if git rev-parse --show-toplevel >/dev/null 2>&1; then
     root="$(team_root)" || exit $?
@@ -568,7 +584,7 @@ cmd_start() { # $1 --config value ('' = default config)  $2 --only value
      || ! git -C "$root" rev-parse --verify HEAD >/dev/null 2>&1; then
     cmd_init
   fi
-  cmd_up 0 "$1" 1 "${2:-}"
+  cmd_up 0 "$1" 1 "${2:-}" "${3:-0}"
 }
 
 # Shared worker conversation and launch preparation.
@@ -675,8 +691,8 @@ prepare_worker() {
 
 # ---------- up -----------------------------------------------------------------
 
-cmd_up() { # $1 attach (1|0)  $2 --config value ('' = default config)  $3 workers only (1|0)  $4 --only value
-  local mode_attach="$1" conf_arg="$2" team_mode=full only="${4:-}"
+cmd_up() { # $1 attach (1|0)  $2 --config value ('' = default config)  $3 workers only (1|0)  $4 --only value  $5 --last (1|0)
+  local mode_attach="$1" conf_arg="$2" team_mode=full only="${4:-}" last="${5:-0}"
   [ "${3:-0}" = 1 ] && team_mode=workers
 
   command -v tmux >/dev/null 2>&1 || die "tmux not found (brew install tmux / apt install tmux)"
@@ -714,7 +730,8 @@ cmd_up() { # $1 attach (1|0)  $2 --config value ('' = default config)  $3 worker
     if [ -n "$saved_hash" ] && [ "$saved_hash" != "$(conf_hash "$conf")" ]; then
       say "$conf changed since $ACTIVE_SESSION started. It applies at the next start (teamflow --kill, then teamflow start)"
     fi
-    [ -z "$only" ] || say "a team is already running, so --only $only was ignored. Add workers with: teamflow workers add <type-or-id>"
+    [ -z "$only" ] || say "a team is already running, so --only $only was ignored. Add workers with: teamflow add <type-or-id>"
+    [ "$last" = 0 ] || say "a team is already running, so --last was ignored"
     if [ -f "$mailbox/running.conf" ]; then
       local absent
       absent="$(comm -23 \
@@ -730,15 +747,19 @@ cmd_up() { # $1 attach (1|0)  $2 --config value ('' = default config)  $3 worker
     return 0
   fi
 
-  # --only: the session roster keeps a single worker. The config itself
-  # stays the team's config, so the next plain start is the default team.
+  # --only keeps a single worker, and --last brings back the last session's
+  # workers. The config stays the team's config either way, so the next
+  # plain start is the default team.
   local roster="$conf"
-  if [ -n "$only" ]; then
+  if [ -n "$only" ] || [ "$last" = 1 ]; then
     mkdir -p "$mailbox" || die "cannot create mailbox at $mailbox"
     roster="$mailbox/running.conf.next"
-    python3 "$TOOL_HOME/scripts/teamflow_workers.py" only "$conf" "$root" "$only" > "$roster" \
-      || { rm -f "$roster"; exit 1; }
-    confout="$(conf_read "$roster")" || die "cannot parse the --only roster"
+    if [ -n "$only" ]; then
+      python3 "$TOOL_HOME/scripts/teamflow_workers.py" only "$conf" "$root" "$only" > "$roster"
+    else
+      python3 "$TOOL_HOME/scripts/teamflow_workers.py" last "$conf" "$root" > "$roster"
+    fi || { rm -f "$roster"; exit 1; }
+    confout="$(conf_read "$roster")" || die "cannot parse the session roster"
   fi
 
   # ---- preflight: config + CLIs (fail before creating anything) -------------
@@ -761,7 +782,7 @@ cmd_up() { # $1 attach (1|0)  $2 --config value ('' = default config)  $3 worker
   fi
   worker_count="$(printf '%s\n' "$tsv" | awk -F "$TSV_SEP" '$1 != "delegator"' | grep -c .)"
   [ "$worker_count" -gt 0 ] \
-    || die "config must include at least one worker pane in $conf"
+    || die "$conf has no default team. Add workers on demand with teamflow add <type> (see teamflow types)"
 
   while IFS="$TSV_SEP" read -r role label cli model effort worktree worker_type role_file; do
     if [ -n "$role_file" ]; then
@@ -830,7 +851,7 @@ EOF
 
 
   # ---- build the tmux session -------------------------------------------------
-  say "building session $sess (panes will show role labels; CLIs boot in place)"
+  say "building session $sess (one window per worker, named by its ID; CLIs boot in place)"
   local worker_command
   local -a order_roles order_clis order_cmds order_cwds
   local line idx=0
@@ -853,8 +874,14 @@ EOF
     rm -f "$mailbox/active"
     die "$*"
   }
-  local pane_total=${#order_cmds[@]}
-  tmux new-session -d -s "$sess" -n team -c "${order_cwds[0]}" "${order_cmds[0]}"
+  local pane_total=${#order_cmds[@]} p0 new_pid next_index=1
+  # The Notetaker acknowledges again after every launch. Clear the old
+  # acknowledgement before its window can start.
+  [ -n "$note_tsv" ] && rm -f "$mailbox/acks/notetaker.json"
+  # One window per worker, named by its instance ID. Adding or removing a
+  # worker opens or closes its window and leaves the others untouched.
+  p0="$(tmux new-session -d -P -F '#{pane_id}' -s "$sess" -n "${order_roles[0]}" \
+    -c "${order_cwds[0]}" "${order_cmds[0]}")"
   tmux has-session -t "=$sess" 2>/dev/null || \
     die "pane boot failed: '${order_roles[0]}' exited immediately (session rolled back)"
   team_write "$mailbox" "SESSION=$sess" "CREATED=$(session_created "$sess")" \
@@ -870,63 +897,18 @@ EOF
   for v in $CLAUDE_ROUTING_VARS; do
     tmux set-environment -u -t "=$sess" "$v" 2>/dev/null
   done
-  local p0
-  p0="$(tmux list-panes -t "=$sess:team" -F '#{pane_id}' | head -1)"
-  [ -n "$note_tsv" ] && rm -f "$mailbox/acks/notetaker.json"
-
-  # Tile panes within each window. Limit window occupancy so every worker
-  # remains readable on the current terminal, then use more windows as needed.
-  local ww wh columns rows capacity next_index=0 window_number=1
-  ww="$(tmux display-message -p -t "$p0" '#{window_width}')"
-  wh="$(tmux display-message -p -t "$p0" '#{window_height}')"
-  columns=$((ww / 20))
-  rows=$(((wh - 1) / 6))
-  [ "$columns" -ge 1 ] || columns=1
-  [ "$rows" -ge 1 ] || rows=1
-  capacity=$((columns * rows))
-  [ "$capacity" -le 12 ] || capacity=12
-  local -a role_pids
-  local win_target win_first win_end before new_pid largest size_width size_height direction
+  local -a role_pids=("$p0")
   while [ "$next_index" -lt "$pane_total" ]; do
-    if [ "$window_number" = 1 ]; then
-      win_target="=$sess:team"
-      win_first="$p0"
-    else
-      win_target="=$sess:team-$window_number"
-      tmux new-window -d -t "=$sess" -n "team-$window_number" \
-        -c "${order_cwds[$next_index]}" "${order_cmds[$next_index]}" \
-        || boot_fail "could not create window for ${order_roles[$next_index]}"
-      win_first="$(tmux list-panes -t "$win_target" -F '#{pane_id}' | head -1)"
-    fi
-    tmux set-window-option -t "$win_target" remain-on-exit on >/dev/null
-    tmux set-window-option -t "$win_target" pane-border-status top >/dev/null
-    win_end=$((next_index + capacity))
-    [ "$win_end" -le "$pane_total" ] || win_end="$pane_total"
-    role_pids+=("$win_first")
+    new_pid="$(tmux new-window -d -P -F '#{pane_id}' -t "=$sess:" -n "${order_roles[$next_index]}" \
+      -c "${order_cwds[$next_index]}" "${order_cmds[$next_index]}")" \
+      || boot_fail "could not create a window for ${order_roles[$next_index]}"
+    role_pids+=("$new_pid")
     next_index=$((next_index + 1))
-    while [ "$next_index" -lt "$win_end" ]; do
-      before="$(tmux list-panes -t "$win_target" -F '#{pane_id}' | sort)"
-      # Split the largest current pane, then let tmux rebalance the grid.
-      read -r size_width size_height largest <<< "$(tmux list-panes -t "$win_target" \
-        -F '#{pane_width} #{pane_height} #{pane_id}' \
-        | awk '$1 * $2 > area {area = $1 * $2; pane = $0} END {print pane}')"
-      direction=-v
-      [ "$size_width" -gt $((size_height * 2)) ] && direction=-h
-      tmux split-window -d "$direction" -t "$largest" \
-        -c "${order_cwds[$next_index]}" "${order_cmds[$next_index]}" \
-        || boot_fail "could not create pane for ${order_roles[$next_index]}"
-      new_pid="$(comm -13 <(printf '%s\n' "$before") <(tmux list-panes -t "$win_target" -F '#{pane_id}' | sort) | head -1)"
-      role_pids+=("$new_pid")
-      tmux select-layout -t "$win_target" tiled >/dev/null \
-        || boot_fail "could not tile window $window_number"
-      next_index=$((next_index + 1))
-    done
-    window_number=$((window_number + 1))
   done
   local _pid _i=0
   for _pid in "${role_pids[@]}"; do
     case "$_pid" in
-      %*) ;;
+      %*) worker_window "$_pid" ;;
       *) boot_fail "pane boot failed: '${order_roles[$_i]}' exited immediately or its pane id could not be captured" ;;
     esac
     _i=$((_i + 1))
@@ -978,7 +960,7 @@ EOF
   say "workspace up: $sess"
   say "config: $conf"
   if [ "$team_mode" = workers ]; then
-    say "workers only: no Delegator pane. Workers idle until addressed. Run the Delegator in your own terminal and reach the mailbox with: bash .agents/lib/delegator.sh task|pane ..."
+    say "workers only: one window per worker, no Delegator window. Workers idle until addressed. The Delegator runs in your own agent session and reaches the mailbox with: bash .agents/lib/delegator.sh task|pane ..."
   else
     say "${order_roles[0]} = pane $p0 (${order_clis[0]}). Workers idle until addressed. Role files are pre-loaded via system prompt (claude/zai) or the startup prompt (codex)."
     [ "${order_clis[0]}" = codex ] \
@@ -1119,6 +1101,30 @@ cmd_kill() { # $1 --config value ('' = the running team, else the default config
   python3 "$TOOL_HOME/scripts/teamflow_workers.py" worktrees clean "$root"
 }
 
+cmd_types() { # $1 --config value: the worker catalog
+  local root conf
+  root="$(team_root)" || exit $?
+  conf="$(resolve_conf "$root" "$1")" || exit $?
+  python3 "$TOOL_HOME/scripts/teamflow_workers.py" types "$conf" "$root"
+}
+
+cmd_trim() { # $1 --config value: remove idle workers from the running session
+  local root rc
+  root="$(team_root)" || exit $?
+  prepare_project "$root"
+  follow_team trim "$root" "$(git_common_dir "$root")/$MAILBOX_NAME" "$1"
+  [ -n "$ACTIVE_SESSION" ] || die "no team is running, so there are no workers to trim"
+  python3 "$TOOL_HOME/scripts/teamflow_workers.py" trim "$T_CONF" "$root"
+  rc=$?
+  if [ "$rc" = 3 ]; then
+    say "every worker is idle, so the team stops"
+    cmd_kill "$1"
+    return
+  fi
+  [ "$rc" = 0 ] || exit "$rc"
+  python3 "$TOOL_HOME/scripts/teamflow_workers.py" worktrees clean "$root"
+}
+
 cmd_worktrees() { # $1 action (list|merge|discard) $2 instance id
   local root
   root="$(team_root)" || exit $?
@@ -1133,8 +1139,8 @@ cmd_worktrees() { # $1 action (list|merge|discard) $2 instance id
 }
 
 # Launch one worker in an existing team. The Python manager publishes the registry.
-cmd_launch_worker() { # config root session worker target split-direction
-  local conf="$1" root="$2" sess="$3" wanted="$4" target="$5" direction="$6"
+cmd_launch_worker() { # config root session worker -> the new window's pane id
+  local conf="$1" root="$2" sess="$3" wanted="$4"
   local mailbox lib_dir wt_root zai_env CODEX_BIN CLAUDE_BIN
   mailbox="$(git_common_dir "$root")/$MAILBOX_NAME"
   lib_dir="$root/.agents/lib"
@@ -1161,13 +1167,8 @@ cmd_launch_worker() { # config root session worker target split-direction
     prepare_worker
     local pid
     [ "$role" != notetaker ] || rm -f "$mailbox/acks/notetaker.json"
-    if [ "$direction" = window ]; then
-      pid="$(tmux new-window -d -P -F '#{pane_id}' -t "=$sess" -n "$target" -c "$cwd" "$worker_command")" || return 1
-    else
-      pid="$(tmux split-window -d -P -F '#{pane_id}' "$direction" -t "$target" -c "$cwd" "$worker_command")" || return 1
-    fi
-    tmux set-window-option -t "$pid" remain-on-exit on >/dev/null
-    tmux set-window-option -t "$pid" pane-border-status top >/dev/null
+    pid="$(tmux new-window -d -P -F '#{pane_id}' -t "=$sess:" -n "$role" -c "$cwd" "$worker_command")" || return 1
+    worker_window "$pid"
     tmux select-pane -t "$pid" -T "$label"
     printf '%s\n' "$pid"
     return 0
@@ -1181,7 +1182,14 @@ cmd_workers() { # $1 config argument $2 action $3 value $4 save (1|0)
   prepare_project "$root"
   follow_team workers "$root" "$(git_common_dir "$root")/$MAILBOX_NAME" "$1"
   conf="$T_CONF"
-  [ -n "$2" ] || die "usage: teamflow workers list|add <type> [--save]|remove <id> [--save]|sync"
+  [ -n "$2" ] || die "usage: teamflow list | add <type-or-id> [--save] | remove <id> [--save] | sync"
+  # On demand: with no team running, add starts one with just this worker.
+  if [ "$2" = add ] && [ -z "$ACTIVE_SESSION" ] && [ "${4:-0}" = 0 ]; then
+    [ -n "$3" ] || die "usage: teamflow add <type-or-id> [--save]"
+    say "no team is running, so this starts one with $3"
+    cmd_up 0 "$1" 1 "$3"
+    return
+  fi
   local -a args=("$2" "$conf" "$root")
   [ -z "$3" ] || args+=("$3")
   [ "${4:-0}" = 0 ] || args+=(--save)
@@ -1200,7 +1208,7 @@ fi
 delegate_to_tool_home "$@"
 unset TEAMFLOW_FROM_PROJECT # keep it out of the panes this run starts
 
-MODE="" NO_ATTACH=0 CONFIG="" CONFIG_GIVEN=0 WORKERS=0 WORKER_ACTION="" WORKER_VALUE="" SAVE=0 ONLY=""
+MODE="" NO_ATTACH=0 CONFIG="" CONFIG_GIVEN=0 WORKERS=0 WORKER_ACTION="" WORKER_VALUE="" SAVE=0 ONLY="" LAST=0
 
 pick_mode() {
   [ -z "$MODE" ] || [ "$MODE" = "$1" ] || die "choose one mode: '$MODE' and '$1' cannot be combined"
@@ -1209,8 +1217,12 @@ pick_mode() {
 
 while [ $# -gt 0 ]; do
   case "$1" in
-    init|start|up|--verify|--check-models|--kill|workers|worktrees) pick_mode "$1" ;;
+    init|start|up|--verify|--check-models|--kill|workers|worktrees|types|trim) pick_mode "$1" ;;
     list|add|remove|sync|merge|discard)
+      # teamflow add|remove|list|sync is short for teamflow workers ...
+      if [ -z "$MODE" ]; then
+        case "$1" in add|remove|list|sync) MODE=workers ;; esac
+      fi
       case "$MODE:$1" in
         workers:list|workers:add|workers:remove|workers:sync) ;;
         worktrees:list|worktrees:merge|worktrees:discard) ;;
@@ -1221,6 +1233,7 @@ while [ $# -gt 0 ]; do
     --no-attach) NO_ATTACH=1 ;;
     --workers) WORKERS=1 ;;
     --save) SAVE=1 ;;
+    --last) LAST=1 ;;
     --only|--only=*)
       [ -z "$ONLY" ] || die "--only given more than once"
       if [ "$1" = --only ]; then
@@ -1262,7 +1275,7 @@ done
 # teamflow skill starts the workers.
 if [ -z "$MODE" ]; then
   usage
-  [ "$NO_ATTACH$WORKERS$CONFIG_GIVEN$SAVE" = 0000 ] && [ -z "$ONLY" ] || die "choose a mode, e.g. start or up"
+  [ "$NO_ATTACH$WORKERS$CONFIG_GIVEN$SAVE$LAST" = 00000 ] && [ -z "$ONLY" ] || die "choose a mode, e.g. start or up"
   exit 0
 fi
 [ "$NO_ATTACH" = 0 ] || [ "$MODE" = up ] || [ "$MODE" = start ] \
@@ -1271,6 +1284,9 @@ fi
   || die "--workers applies to start or up only, not to $MODE (--verify and --kill follow the running team)"
 [ -z "$ONLY" ] || [ "$MODE" = up ] || [ "$MODE" = start ] \
   || die "--only applies to start or up only"
+[ "$LAST" = 0 ] || [ "$MODE" = up ] || [ "$MODE" = start ] \
+  || die "--last applies to start or up only"
+[ -z "$ONLY" ] || [ "$LAST" = 0 ] || die "choose --only or --last, not both"
 [ "$SAVE" = 0 ] || { [ "$MODE" = workers ] && { [ "$WORKER_ACTION" = add ] || [ "$WORKER_ACTION" = remove ]; }; } \
   || die "--save applies to workers add or workers remove only"
 [ "$CONFIG_GIVEN" = 0 ] || [ "$MODE" != worktrees ] \
@@ -1280,11 +1296,13 @@ fi
 
 case "$MODE" in
   init)           cmd_init ;;
-  start)          cmd_start "$CONFIG" "$ONLY" ;;
-  up)             cmd_up "$((1 - NO_ATTACH))" "$CONFIG" "$WORKERS" "$ONLY" ;;
+  start)          cmd_start "$CONFIG" "$ONLY" "$LAST" ;;
+  up)             cmd_up "$((1 - NO_ATTACH))" "$CONFIG" "$WORKERS" "$ONLY" "$LAST" ;;
   --verify)       cmd_verify "$CONFIG" ;;
   --check-models) cmd_check_models "$CONFIG" ;;
   --kill)         cmd_kill "$CONFIG" ;;
   workers)        cmd_workers "$CONFIG" "$WORKER_ACTION" "$WORKER_VALUE" "$SAVE" ;;
   worktrees)      cmd_worktrees "$WORKER_ACTION" "$WORKER_VALUE" ;;
+  types)          cmd_types "$CONFIG" ;;
+  trim)           cmd_trim "$CONFIG" ;;
 esac

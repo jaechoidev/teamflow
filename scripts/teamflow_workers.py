@@ -62,8 +62,6 @@ def resolve(cp):
     if cp.has_section("pane.delegator"):
         rows.append(pane_row("delegator", cp["pane.delegator"]))
     workers = sections(cp, "worker.")
-    if not workers:
-        raise ConfigError("config requires worker instances")
     for index, section in enumerate(workers):
         worker_id = section[7:]
         item = cp[section]
@@ -245,26 +243,6 @@ def guard_removal(root, worker_id):
         raise ConfigError("the notetaker is writing a note. Remove it after it finishes")
 
 
-def launch_target(session):
-    windows = tmux("list-windows", "-t", "=" + session,
-                   "-F", "#{window_id} #{window_name} #{window_width} #{window_height} #{window_panes}")
-    names = set()
-    for line in windows.splitlines():
-        window, name, width, height, count = line.split()
-        names.add(name)
-        if name != "team" and not re.fullmatch(r"team-[0-9]+", name):
-            continue
-        capacity = min(12, max(1, int(width) // 20) * max(1, (int(height) - 1) // 6))
-        if int(count) < capacity:
-            panes = tmux("list-panes", "-t", window, "-F", "#{pane_id} #{pane_width} #{pane_height}")
-            largest = max((line.split() for line in panes.splitlines()), key=lambda p: int(p[1]) * int(p[2]))
-            return largest[0], "-h" if int(largest[1]) > int(largest[2]) * 2 else "-v"
-    number = 2
-    while f"team-{number}" in names:
-        number += 1
-    return f"team-{number}", "window"
-
-
 def sync_workers(root, path, desired):
     """Make the running team match the roster in desired (config text)."""
     record = running_team(root, path)
@@ -276,7 +254,7 @@ def sync_workers(root, path, desired):
         rows = [row for row in rows if row[0] != "delegator"]
     wanted = {row[0] for row in rows}
     panes = active_panes(root, record)
-    # Include dead panes when removing an instance, so its tile disappears too.
+    # Include dead panes when removing an instance, so its window closes too.
     registry = mailbox / "panes.tsv"
     registered = dict(line.split("\t", 1) for line in registry.read_text().splitlines() if "\t" in line) if registry.exists() else {}
     all_panes = set(tmux("list-panes", "-s", "-t", "=" + record["SESSION"], "-F", "#{pane_id}").splitlines())
@@ -303,10 +281,9 @@ def sync_workers(root, path, desired):
     try:
         for row in missing:
             worker = row[0]
-            target, direction = launch_target(record["SESSION"])
             result = subprocess.run(["bash", str(Path(__file__).with_name("teamflow")),
                                      "--internal-launch-worker", str(session), str(root), record["SESSION"],
-                                     worker, target, direction], capture_output=True, text=True)
+                                     worker], capture_output=True, text=True)
             pane = result.stdout.strip()
             if result.returncode or not re.fullmatch(r"%[0-9]+", pane):
                 raise ConfigError(result.stderr.strip() or f"could not launch {worker}")
@@ -317,7 +294,6 @@ def sync_workers(root, path, desired):
                 if tmux("display-message", "-p", "-t", pane, "#{pane_dead}") != "0":
                     raise ConfigError(f"{worker} exited during launch")
             panes[worker] = pane
-            tmux("select-layout", "-t", pane, "tiled")
     except ConfigError:
         for pane in launched:
             try:
@@ -339,20 +315,6 @@ def sync_workers(root, path, desired):
             old = registered.get(row[0])
             if old and old in all_panes:
                 tmux("kill-pane", "-t", old)
-        # Keep visual pane order aligned with the roster, including Notetaker last.
-        positions = tmux("list-panes", "-s", "-t", "=" + record["SESSION"],
-                         "-F", "#{window_index} #{pane_index} #{pane_id}").splitlines()
-        slots = [parts[2] for parts in sorted((line.split() for line in positions),
-                                            key=lambda parts: (int(parts[0]), int(parts[1])))]
-        ordered = [panes[row[0]] for row in rows]
-        slots = [pane for pane in slots if pane in ordered]
-        for index, desired_pane in enumerate(ordered):
-            if slots[index] != desired_pane:
-                other = slots.index(desired_pane)
-                tmux("swap-pane", "-d", "-s", desired_pane, "-t", slots[index])
-                slots[index], slots[other] = slots[other], slots[index]
-        for window in tmux("list-windows", "-t", "=" + record["SESSION"], "-F", "#{window_id}").splitlines():
-            tmux("select-layout", "-t", window, "tiled")
         atomic_write(registry, "".join(f"{row[0]}\t{panes[row[0]]}\n" for row in rows))
         record["CONFIG_HASH"] = hashlib.sha256(path.read_bytes()).hexdigest()
         atomic_write(mailbox / "active", "".join(f"{key}={value}\n" for key, value in record.items()))
@@ -439,6 +401,8 @@ def list_workers(root, path):
     panes = active_panes(root, record) if record else {}
     in_config = {section[7:] for section in sections(saved, "worker.")}
     listed = {row[0] for row in rows}
+    if not record and not any(row[0] != "delegator" for row in rows):
+        print(f"no default team in {path.name}. Add workers on demand: teamflow add <type> (see teamflow types)")
     for worker_id, label, cli, model, _, worktree, kind, _ in rows:
         if worker_id == "delegator":
             continue
@@ -522,11 +486,11 @@ def add_worker(root, path, value, save):
         resolve(parse_text(changed[target]))
     live = commit_change(root, path, changed, record)
     if live and path in changed:
-        print(f"added {worker_id}, launched its pane, and saved it to {path.name}")
+        print(f"added {worker_id}, launched its window, and saved it to {path.name}")
     elif live and saved.has_section(f"worker.{worker_id}"):
-        print(f"added {worker_id} from the default team to this session and launched its pane")
+        print(f"added {worker_id} from the default team to this session and launched its window")
     elif live:
-        print(f"added {worker_id} to this session and launched its pane. "
+        print(f"added {worker_id} to this session and launched its window. "
               f"{path.name} is unchanged: add --save to keep it for the next start")
     else:
         print(f"added {worker_id} to the default team in {path.name}. It launches at the next start")
@@ -554,9 +518,9 @@ def remove_worker(root, path, worker_id, save):
     guard_removal(root, worker_id)
     live = commit_change(root, path, changed, record)
     if live and path in changed:
-        print(f"removed {worker_id}, closed its pane, and removed it from {path.name}")
+        print(f"removed {worker_id}, closed its window, and removed it from {path.name}")
     elif live:
-        print(f"removed {worker_id} from this session and closed its pane. {path.name} is unchanged"
+        print(f"removed {worker_id} from this session and closed its window. {path.name} is unchanged"
               + (": add --save to drop it for the next start" if read_config(path).has_section(section) else ""))
     else:
         print(f"removed {worker_id} from the default team in {path.name}")
@@ -586,6 +550,81 @@ def only_roster(root, path, value):
         text = update_option(text, f"type.{kind}", "next_id", number + 1)
     if not parse_text(text).has_section(f"worker.{worker_id}"):
         text = with_worker(text, parse_text(text), worker_id, kind)
+    resolve(parse_text(text))
+    print(text, end="")
+
+
+def list_types(path):
+    """The worker catalog: every type the Delegator can add, with what it is for."""
+    cp = read_config(path)
+    resolve(cp)
+    print("type\tcli\tmodel\teffort\tworktree\tuse for")
+    for section in sections(cp, "type."):
+        item = cp[section]
+        print("\t".join([section[5:], item.get("cli", ""), item.get("model", ""), item.get("effort", ""),
+                         item.get("worktree", "no"), item.get("use_for", "")]))
+
+
+def busy_workers(root):
+    """Workers with an assigned or in-progress task. The notetaker is busy
+    while it writes a note or released tasks wait for it."""
+    busy = set()
+    released = False
+    for task, destination in task_destinations(root):
+        if (task / "status").read_text().strip() in {"assigned", "in-progress"}:
+            busy.add(destination)
+        released = released or (task / "released").exists()
+    if released or (mailbox_path(root) / "note-queue" / "active").exists():
+        busy.add("notetaker")
+    return busy
+
+
+def trim_workers(root, path):
+    """Remove idle workers from the running session. Exit status 3 means
+    every worker is idle, so the caller stops the team instead."""
+    if not running_team(root, path):
+        raise ConfigError("no team is running, so there are no workers to trim")
+    session = session_config(root)
+    text = session.read_text() if session.exists() else path.read_text()
+    workers = instances(parse_text(text))
+    busy = busy_workers(root)
+    idle = [worker for worker in workers if worker not in busy]
+    if not idle:
+        print("no idle workers: every worker has a task in progress")
+        return 0
+    if len(idle) == len(workers):
+        print(f"every worker is idle ({', '.join(idle)})")
+        return 3
+    for worker in idle:
+        text = replace_section(text, f"worker.{worker}", "")
+    sync_workers(root, path, text)
+    print(f"removed idle workers from this session: {', '.join(idle)}")
+    print(f"still working: {', '.join(worker for worker in workers if worker in busy)}")
+    return 0
+
+
+def last_roster(root, path):
+    """Print a session roster with the workers of the last session, using
+    the current type settings from the config."""
+    session = session_config(root)
+    if not session.exists():
+        raise ConfigError("no earlier session to resume. Start the default team with teamflow start, "
+                          "or add workers on demand with teamflow add <type>")
+    previous = read_config(session)
+    text = path.read_text()
+    cp = parse_text(text)
+    resolve(cp)
+    for worker in instances(cp):
+        text = replace_section(text, f"worker.{worker}", "")
+    for worker in instances(previous):
+        kind = previous[f"worker.{worker}"].get("type", "")
+        current = parse_text(text)
+        if not current.has_section(f"type.{kind}"):
+            print(f"teamflow: skipped {worker}: type {kind} is no longer in {path.name}", file=sys.stderr)
+            continue
+        text = with_worker(text, current, worker, kind)
+    if not instances(parse_text(text)):
+        raise ConfigError("the last session had no workers to resume")
     resolve(parse_text(text))
     print(text, end="")
 
@@ -740,7 +779,7 @@ def worktrees_main(argv):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("command", choices=["parse", "list", "add", "remove", "sync", "only"])
+    parser.add_argument("command", choices=["parse", "list", "add", "remove", "sync", "only", "last", "types", "trim"])
     parser.add_argument("config", type=Path)
     parser.add_argument("root", type=Path)
     parser.add_argument("value", nargs="?")
@@ -760,28 +799,36 @@ def main():
         if not args.value:
             raise ConfigError("usage: only <config> <root> <worker-or-type>")
         only_roster(args.root, args.config, args.value)
+    elif args.command == "last":
+        last_roster(args.root, args.config)
+    elif args.command == "types":
+        list_types(args.config)
+    elif args.command == "trim":
+        return trim_workers(args.root, args.config)
     elif args.command == "add":
         if not args.value:
-            raise ConfigError("usage: workers add <type> [--save]")
+            raise ConfigError("usage: workers add <type-or-id> [--save]")
         add_worker(args.root, args.config, args.value, args.save)
     elif args.command == "remove":
         if not args.value:
             raise ConfigError("usage: workers remove <id> [--save]")
         remove_worker(args.root, args.config, args.value, args.save)
+    return 0
 
 
 if __name__ == "__main__":
     try:
         # worktrees <action> <root> [id]; the other commands: <command> <config> <root> [id]
         run = (lambda: worktrees_main(sys.argv[2:])) if sys.argv[1:2] == ["worktrees"] else main
-        if len(sys.argv) > 3 and sys.argv[1] in {"add", "remove", "sync", "worktrees"}:
+        if len(sys.argv) > 3 and sys.argv[1] in {"add", "remove", "sync", "trim", "worktrees"}:
             mailbox = mailbox_path(Path(sys.argv[3]))
             mailbox.mkdir(parents=True, exist_ok=True)
             with (mailbox / "workers.lock").open("a") as lock:
                 fcntl.flock(lock, fcntl.LOCK_EX)
-                run()
+                code = run()
         else:
-            run()
+            code = run()
+        sys.exit(code or 0)
     except (ConfigError, OSError, subprocess.CalledProcessError) as exc:
         print(f"teamflow {'worktrees' if sys.argv[1:2] == ['worktrees'] else 'workers'}: {exc}", file=sys.stderr)
         sys.exit(1)

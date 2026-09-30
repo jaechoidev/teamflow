@@ -1,28 +1,43 @@
-# teamflow - tmux workspace
+# teamflow
 
-In workers mode, the Delegator plans with the user in an external terminal.
-Configured workers and the optional Notetaker run in tmux windows. Larger
-rosters spill into additional windows.
-The launcher also supports a full-team mode with the Delegator in the tiled
-workspace. They share a task mailbox, and developers have
-dedicated git worktrees.
-Any git repo can adopt it.
+Cross-vendor subagents for any coding agent.
+
+Your agent session (Codex, Claude Code, or another) becomes the Delegator.
+It plans with you, then hands tasks to worker agents from other vendors:
+Claude, Codex, or GLM through z.ai, each with its own model and effort. Each
+worker runs in its own tmux window that you can watch and step into, keeps
+its conversation across sessions, and gets its own git worktree when it
+writes code. Tasks and results travel through a mailbox in `.git/teamflow/`,
+so nothing is ever typed into your session.
+
+Compared with built-in subagents, workers can come from any vendor, persist,
+and stay visible. The cost is weight: teamflow needs tmux, each vendor's CLI
+and login, and results arrive asynchronously.
+
+## Quickstart
 
 ```
 cd /path/to/your-project
 teamflow init
 ```
 
-Then open your agent (Codex, Claude Code, or another) in the project and ask
-it to start teamflow. Its `teamflow` skill makes that session the Delegator
-and launches the workers in a detached tmux session. `init` itself launches
-nothing, and a bare `teamflow` only prints help.
+`init` prepares the project and launches nothing. Then open your agent in the
+project and use the `teamflow` skill in one of two ways:
+
+- **`teamflow`**: the session becomes the Delegator, and no workers start.
+  After planning, the Delegator picks worker types from the catalog and adds
+  just the workers the plan needs with `teamflow add <type>`. The first add
+  starts a detached tmux session.
+- **`teamflow config [file]`**: starts the default team from `teamflow.conf`
+  (or the named config) first, then plans and delegates to it.
+
+Watch the workers with `tmux attach -t <session>`, one window per worker.
+A bare `teamflow` in the shell only prints help.
 
 The `teamflow` shell alias points to this repo's `scripts/teamflow`.
-`teamflow start` from the target folder does both steps from the shell: if
-the teamflow scaffold or Git history is missing, it runs `init` first, then
-launches the workers. From this tool home, `init` creates a Git
-repository when needed. It copies
+`teamflow start` from the target folder starts the default team from the
+shell, running `init` first when the scaffold or Git history is missing.
+From this tool home, `init` creates a Git repository when needed. It copies
 `scripts/teamflow`, `scripts/teamflow_workers.py`, `scripts/teamflow_scaffold.py`,
 and `.agents/` (roles, lib, doc templates, AGENTS-SECTION.md), writes
 `teamflow.conf` only when absent, and updates only the marked AGENTS.md
@@ -30,8 +45,7 @@ section. If the repository has no commit, `init`
 makes a first commit containing only the teamflow scaffold. Existing staged
 or untracked project files stay outside that commit. Existing repositories
 with a commit are never committed by `init`. The first commit gives the
-launcher a HEAD for developer worktrees. `start` launches workers mode
-without attaching to the tmux session.
+launcher a HEAD for developer worktrees.
 
 ## Updates and upgrades
 
@@ -55,75 +69,85 @@ running from the old state is refused until `--kill`. Developer
 conversations restart after the move, because Claude files a transcript
 under the directory it ran in.
 
-## Pane map
+## Worker catalog
 
-In workers mode, the **Delegator and Planner** runs outside tmux. The
-default config starts these four panes in order:
+`teamflow.conf` has two parts. `[type.<name>]` sections are the catalog:
+each sets a CLI, model, effort, worktree policy, role file, and `use_for`,
+which tells the Delegator when to pick that type. `teamflow types` lists
+them. The shipped catalog:
 
-1. **Researcher** - z.ai GLM (`glm-5.3`, max)
-2. **Reviewer** - Claude (`fable`, xhigh)
-3. **Developer L** - Claude (`fable`, max)
-4. **Notetaker** - Claude (`opus`, xhigh), maintaining `docs/notes/`
+| Type | Agent | Use for |
+| --- | --- | --- |
+| `researcher` | z.ai GLM (`glm-5.3`, max) | external research, sources and citations, comparing options |
+| `reviewer` | Claude (`fable`, xhigh) | reviewing plans, architecture, and diffs |
+| `developer-l` | Claude (`fable`, max) | large or risky changes, cross-cutting refactors, hard bugs |
+| `developer-m` | Claude (`opus`, max) | typical features and fixes with a clear scope |
+| `developer-s` | z.ai GLM (`glm-5.3`, max) | small, well-defined edits, docs, mechanical changes |
+| `notetaker` | Claude (`opus`, xhigh) | project notes in `docs/notes/`, only when you want notes |
 
-Developer M and S profiles are defined but have no instances in the default
-config. Add them with `teamflow workers add developer-m` or
-`teamflow workers add developer-s`. All three developer profiles use the
-same `.agents/roles/developer.md` instructions. The profile selects the CLI,
-model, and effort. The Delegator defines task scope in each assignment.
-
-In full-team mode, the Delegator and workers share a tiled tmux layout.
-Workers mode tiles only worker panes. Larger rosters use more windows so
-the panes remain readable.
-
-Models, CLIs, and effort levels come from `[type.<name>]` sections in
-`teamflow.conf`. Each `[worker.<instance-id>]` refers to a type. Worker
-section order sets pane order. The Notetaker has the singleton ID
-`notetaker` and must be last. The launcher never silently substitutes a model — if something is missing it
-says exactly what and where to fix it.
+`[worker.<instance-id>]` sections are the optional default team that
+`teamflow config` and `teamflow start` launch. The shipped default team is
+`researcher-1`, `reviewer-1`, `developer-l-1`, and the `notetaker`. A config
+with no worker sections is a pure catalog, and workers only join on demand.
+The three developer types share `.agents/roles/developer.md`. The type
+selects the CLI, model, and effort, and the Delegator defines task scope in
+each assignment. The Notetaker has the singleton ID `notetaker` and must be
+last in a default team. The launcher never silently substitutes a model. If
+something is missing it says exactly what and where to fix it.
 
 ## Managing workers
 
 ```
-teamflow workers list
-teamflow workers add developer-m
-teamflow workers add developer-l-1
-teamflow workers add researcher --save
-teamflow workers remove developer-m-1
-teamflow workers sync
-teamflow start --only notetaker
+teamflow types                      # the worker catalog
+teamflow list                       # the running roster
+teamflow add developer-m            # add a worker. With no team running, start one
+teamflow add developer-l-1          # bring back a default-team worker
+teamflow add researcher --save      # also add it to the default team
+teamflow remove developer-m-1
+teamflow sync                       # repair the running windows
+teamflow trim                       # remove idle workers
+teamflow start --only notetaker     # a team with just one worker
+teamflow start --last               # the last session's workers again
 ```
 
-`teamflow.conf` is the default team. While a team runs, `add` and `remove`
-change that session only: adding launches the pane, removing closes it, and
-other workers keep running. The session roster lives in
-`.git/teamflow/running.conf`, so `teamflow.conf` and `git status` stay
-unchanged. After `--kill`, the next start begins from `teamflow.conf` again.
-Add `--save` to also write the change to `teamflow.conf`. `workers list`
-marks workers that exist in this session only.
+`add`, `remove`, `list`, and `sync` are short for `teamflow workers ...`.
+Each worker runs in its own tmux window, named by its instance ID. While a
+team runs, `add` and `remove` change that session only: adding opens a
+window, removing closes one, and other workers keep running. The session
+roster lives in `.git/teamflow/running.conf`, so `teamflow.conf` and
+`git status` stay unchanged. Add `--save` to also write the change to the
+default team in `teamflow.conf`. `teamflow list` marks workers that exist in
+this session only.
 
-`add <type>` first brings back a default-team instance of that type that is
-missing from the session, then creates a new numbered one. `add <id>` brings
-back that default-team instance. With no team running, a plain `add` or
-`remove` has no session to change, so it refuses and explains the choices:
-start the default team, start a team with only that worker, or rerun with
-`--save` to change the default team.
+With no team running, `add` starts one with just that worker, so a team can
+grow from zero as the Delegator needs workers. `add <type>` first brings back
+a default-team instance of that type that is missing from the session, then
+creates a new numbered one. `add <id>` brings back that default-team
+instance. A plain `remove` with no team running refuses, because there is no
+session to change. With `--save` and no team running, `add` and `remove` edit
+only the default team.
+
+`trim` removes every worker without an assigned or in-progress task. The
+Notetaker stays while it writes a note or released tasks wait for it. When
+every worker is idle, `trim` stops the team like `--kill`. Removed workers
+keep their conversations and branches, and `add` brings them back.
 
 `start --only <type-or-id>` launches a team with a single worker, for
-example only the Notetaker to catch up on waiting notes. `teamflow.conf`
-stays the default team. While a smaller team runs, `start` reattaches and
-names the default workers the session lacks.
+example only the Notetaker to catch up on waiting notes. `start --last`
+brings back the last session's workers with the current type settings. In
+both cases `teamflow.conf` stays the default team. While a smaller team runs,
+`start` reattaches and names the default workers the session lacks.
 
-Instances have stable numbered IDs for tasks, panes, conversations, worktrees,
-and branches. A number is never reused, including numbers from earlier
-sessions. Removal keeps the worker's history, and its worktree stays until
-`--kill` cleans it up (see Stopping and worktrees). It refuses an unfinished
-assigned task or a note in progress, and it cannot remove the last worker
-(stop the team with `--kill` instead). `workers sync` makes
-the running panes match the session roster again, for example after a pane
-died or an interrupted change. Edits to `teamflow.conf` while a team runs
-apply at the next start. Changes to settings of running workers (model,
-effort, CLI, or role file) require a restart. Use `--config <file>` to manage
-a variant.
+Instances have stable numbered IDs for tasks, windows, conversations,
+worktrees, and branches. A number is never reused, including numbers from
+earlier sessions. Removal keeps the worker's history, and its worktree stays
+until `--kill` cleans it up (see Stopping and worktrees). It refuses an
+unfinished assigned task or a note in progress, and it cannot remove the last
+worker (stop the team with `--kill` instead). `sync` makes the running
+windows match the session roster again, for example after a worker died or an
+interrupted change. Edits to `teamflow.conf` while a team runs apply at the
+next start. Changes to settings of running workers (model, effort, CLI, or
+role file) require a restart. Use `--config <file>` to manage a variant.
 
 ## Choosing a config
 
@@ -214,16 +238,16 @@ its own roster and type settings.
 ## Workers mode (external Delegator)
 
 Run the Delegator yourself in any terminal, with Codex, Claude, or Claude
-routed to z.ai, and let the launcher start the configured workers:
+routed to z.ai. Workers join on demand with `teamflow add <type>`, or the
+default team starts together:
 
 ```
-./scripts/teamflow start                    # prints the session name
+./scripts/teamflow start                    # the default team; prints the session name
 tmux attach -t <session>                     # watch the workers (optional)
 ```
 
-Configured workers and an optional Notetaker use a tiled layout across as
-many windows as needed, with their models, worktrees, and conversation
-resume. `[pane.delegator]` is
+Each worker runs in its own window, named by its instance ID, with its
+model, worktree, and conversation resume. `[pane.delegator]` is
 ignored and may be left out. No Delegator pane or CLI starts, and nothing
 is typed into your session: results arrive in the mailbox. `--config`,
 `--verify`, and `--kill` work as for the full team. One team runs per
@@ -243,8 +267,9 @@ bash .agents/lib/delegator.sh task release T-0001 abc1234
 cat .git/teamflow/note-queue/completed/T-0001.md
 ```
 
-It refuses to run inside a worker pane. `init` copies the `teamflow`,
-`teamflow-resume`, `teamflow-kill`, and `teamflow-workers` skills from the tool home into the project's `.agents/skills/`
+It refuses to run inside a worker window. `init` copies the `teamflow`,
+`teamflow-resume`, `teamflow-kill`, `teamflow-workers`, and `teamflow-trim`
+skills from the tool home into the project's `.agents/skills/`
 for Codex and `.claude/skills/` for Claude Code. Later runs refresh
 unmodified copies and stage `.new` files for local edits (see Updates and
 upgrades).
@@ -268,8 +293,9 @@ upgrades).
 - **Workers only**: `./scripts/teamflow start`, with the Delegator in
   your own terminal (see Workers mode)
 - **Talk**: in workers mode, plan with the Delegator in your terminal. It
-  turns the plan into tasks, dispatches them, and reports real results. In
-  full-team mode, use the left Delegator pane.
+  turns the plan into tasks, adds the workers it needs, dispatches the
+  tasks, and reports real results. In full-team mode, use the `delegator`
+  window.
 - **Dispatch protocol**: tasks go through the mailbox — the Delegator does
   this for you via `task.sh new` + `pane.sh send-to`. Workers `take` →
   `done` (result in the task record). Nothing is ever typed into the
@@ -281,6 +307,8 @@ upgrades).
   (`... tail developer-l-1` shows what's on screen — a CLI may be busy; delivery
   ≠ completion, the mailbox is the source of truth)
 - **Verify panes**: `./scripts/teamflow --verify` (liveness + role acks)
+- **Trim**: `./scripts/teamflow trim` (removes idle workers; stops the team
+  when every worker is idle)
 - **Stop**: `./scripts/teamflow --kill` (stops the session, removes worktrees
   whose work is already merged, and lists the rest; see Stopping and
   worktrees)
@@ -356,7 +384,7 @@ conflict it aborts, merges nothing, and keeps the worktree. `discard` cannot
 be undone. Both refuse a worker that is still running. The `teamflow-kill`
 skill asks you which one to use for each kept worktree.
 
-The launcher creates a developer's worktree right before its pane starts,
+The launcher creates a developer's worktree right before its window starts,
 at `start` or `workers add`. A new worktree gets a fresh branch from the main
 checkout's current commit. A kept branch is reused, so its work continues.
 
@@ -381,7 +409,7 @@ checkout's current commit. A kept branch is reused, so its work continues.
 - `.agents/doc-templates/` - note templates and the project notes workflow
 - `.agents/lib/delegator.sh` - runs `task.sh` and `pane.sh` as the
   Delegator from outside tmux (workers mode)
-- `skills/teamflow/`, `skills/teamflow-resume/`, `skills/teamflow-kill/`, and `skills/teamflow-workers/` (tool home) - source skills
+- `skills/teamflow/`, `skills/teamflow-resume/`, `skills/teamflow-kill/`, `skills/teamflow-workers/`, and `skills/teamflow-trim/` (tool home) - source skills
 - `.agents/skills/` and `.claude/skills/` (initialized projects) - repo-scoped copies of those skills
 
 ## Project notes

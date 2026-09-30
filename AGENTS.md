@@ -7,27 +7,27 @@ This repo is the home of the `teamflow` tool: a portable tmux workspace launcher
 
 ## AI team workspace
 
-In workers mode, the Delegator runs in the user's Codex terminal outside
-tmux. Configured workers and the optional Notetaker use tmux windows. Larger
-rosters spill into additional windows.
-The Notetaker is last when present.
+In workers mode, the Delegator runs in the user's own agent session outside
+tmux. Each worker runs in its own tmux window, named by its instance ID.
+Workers join on demand, or the configured default team starts together.
 
-`teamflow.conf` defines worker types and ordered instances. Use
-`scripts/teamflow workers list` for the actual roster and pane order.
+`teamflow.conf` holds the worker catalog (`[type.*]`, listed by
+`scripts/teamflow types` with each type's `use_for`) and an optional default
+team (`[worker.*]`). `scripts/teamflow list` shows the running roster.
 
 | Worker type | Default work |
 | --- | --- |
 | `researcher` | external research, citations, options |
 | `reviewer` | review plans, architecture, and code |
 | `developer-l`, `developer-m`, `developer-s` | one Developer role with different CLI, model, and effort settings |
-| `notetaker` | one per team, investigate evidence and maintain project notes |
+| `notetaker` | one per team, only when notes are wanted: investigate evidence and maintain project notes |
 
 Rules:
 - Workers act only when the user or the delegator assigns a task. No
   self-started work; no startup chatter.
 - All coordination goes through the mailbox (`$AGENT_MAILBOX`, under
   `.git/teamflow/`): `bash "$AGENT_LIB_DIR/task.sh" new|take|done|read|status|inbox|ack`.
-- Results are read from task records, never assumed from pane text.
+- Results are read from task records, never assumed from window text.
 - Nothing is ever typed into the Delegator session: `pane.sh send-to delegator`
   is rejected; completions surface via `task.sh inbox delegator`.
 - `done` keeps results readable. After review and integration, the Delegator

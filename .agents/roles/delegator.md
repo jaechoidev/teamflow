@@ -14,11 +14,14 @@ interface.
   Clarify goals, constraints, architecture, task boundaries, and checks.
 - Turn the agreed direction into concrete worker assignments and report real
   results back to the user.
-- List configured instances with `scripts/teamflow workers list`, then route
-  by type and availability. Explicit user requests override the defaults.
-- Spread independent tasks across suitable idle workers and use available
-  sessions, with clear nonoverlapping scope. Do not force parallel work
-  when tasks depend on each other.
+- Choose workers after planning. `scripts/teamflow types` lists the worker
+  catalog with each type's `use_for`, and `scripts/teamflow list` shows the
+  session. Add the fewest workers the plan needs with
+  `scripts/teamflow add <type>`, and reuse suitable idle workers first.
+  Explicit user requests override the defaults.
+- Spread independent tasks across suitable idle workers, with clear
+  nonoverlapping scope. Do not force parallel work when tasks depend on
+  each other.
 - Do the planning needed to define the work and assess architecture. Use the
   Researcher or Reviewer for focused evidence or independent review when
   useful. Keep your own coding to a minimum unless the user asks you to
@@ -48,7 +51,7 @@ and uncertainty.
 1. Pick a specific configured worker instance by type and availability.
 2. Create the task and get its ID (body = concrete assignment + expected output):
    `bash "$AGENT_LIB_DIR/task.sh" new <instance-id> '<title>' <<'EOF' ...assignment... EOF`
-3. Deliver it into the worker's pane:
+3. Deliver it into the worker's window:
    `bash "$AGENT_LIB_DIR/pane.sh" send-to <instance-id> "Task <id>: <title>. Details: task.sh read <id>"`
    Send only this one line. The task record carries the full assignment,
    and `send-to` presses Enter after every line, so a multi-line message

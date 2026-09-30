@@ -41,9 +41,11 @@ class WorkersTest(unittest.TestCase):
     def test_add_remove_and_unfinished_task_guard(self):
         config = (self.root / "teamflow.conf").read_text()
         self.assertEqual(config.count("role_file = .agents/roles/developer.md"), 3)
-        refused = self.teamflow("workers", "add", "developer-m")
+        # With no team running, a plain add would start one, so this test
+        # (which has no stub CLIs) only edits the default team with --save.
+        refused = self.teamflow("workers", "remove", "researcher-1")
         self.assertNotEqual(refused.returncode, 0)
-        self.assertIn("start --only developer-m", refused.stderr)
+        self.assertIn("no session to remove", refused.stderr)
         added = self.teamflow("workers", "add", "developer-m", "--save")
         self.assertEqual(added.returncode, 0, added.stderr)
         self.assertIn("developer-m-1", added.stdout)
@@ -97,8 +99,8 @@ class WorkersTest(unittest.TestCase):
             self.assertEqual(live["researcher-1"], original["researcher-1"])
             self.assertEqual(live["researcher-2"], original["researcher-2"])
             self.assertIn("researcher-3", live)
-            order = subprocess.check_output(["tmux", "list-panes", "-s", "-t", "=" + start.stdout.strip(), "-F", "#{pane_id}"], text=True).splitlines()
-            self.assertEqual(order[-1], original["notetaker"])
+            windows = subprocess.check_output(["tmux", "list-windows", "-t", "=" + start.stdout.strip(), "-F", "#{window_name}"], text=True).splitlines()
+            self.assertEqual(windows, ["researcher-1", "researcher-2", "notetaker", "researcher-3"])
             task = self.root / ".git/teamflow/tasks/T-0001"
             task.mkdir(parents=True)
             (task / "task.md").write_text("to:      researcher-2\n")
@@ -142,7 +144,7 @@ class WorkersTest(unittest.TestCase):
             self.teamflow("--kill", env=env)
 
     @unittest.skipUnless(shutil.which("tmux"), "tmux unavailable")
-    def test_fifteen_instances_span_windows(self):
+    def test_fifteen_instances_get_windows(self):
         roles = self.root / ".agents" / "roles"
         config = "[workspace]\nsession_prefix = smoke\n[type.researcher]\ncli = claude\nmodel = stub\nrole_file = .agents/roles/researcher.md\n"
         config += "".join(f"[worker.researcher-{i}]\ntype = researcher\n" for i in range(1, 16))
@@ -159,15 +161,9 @@ class WorkersTest(unittest.TestCase):
             self.assertEqual(launched.returncode, 0, launched.stderr)
             verified = self.teamflow("--verify", env=env)
             self.assertEqual(verified.stdout.count("pane %"), 15, verified.stdout)
-            windows = subprocess.check_output(["tmux", "list-windows", "-t",
-                                               "=" + launched.stdout.strip(), "-F", "#{window_name}"], text=True)
-            self.assertGreaterEqual(len(windows.splitlines()), 2)
-            positions = subprocess.check_output(["tmux", "list-panes", "-t",
-                                                 "=" + launched.stdout.strip() + ":team", "-F",
-                                                 "#{pane_left} #{pane_top}"], text=True)
-            coordinates = [tuple(map(int, line.split())) for line in positions.splitlines()]
-            self.assertGreater(len({x for x, _ in coordinates}), 1)
-            self.assertGreater(len({y for _, y in coordinates}), 1)
+            windows = subprocess.check_output(["tmux", "list-windows", "-t", "=" + launched.stdout.strip(),
+                                               "-F", "#{window_name} #{window_panes}"], text=True)
+            self.assertEqual(windows.splitlines(), [f"researcher-{i} 1" for i in range(1, 16)])
             registry = self.root / ".git/teamflow/panes.tsv"
             original = dict(line.split("\t") for line in registry.read_text().splitlines())
             added = self.teamflow("workers", "add", "researcher", env=env)

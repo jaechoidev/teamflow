@@ -22,7 +22,7 @@ import subprocess
 import sys
 import tempfile
 
-SKILLS = ("teamflow", "teamflow-resume", "teamflow-kill", "teamflow-workers")
+SKILLS = ("teamflow", "teamflow-resume", "teamflow-kill", "teamflow-workers", "teamflow-trim")
 SCRIPTS = ("scripts/teamflow", "scripts/teamflow_workers.py", "scripts/teamflow_scaffold.py")
 MANIFEST = ".agents/teamflow-manifest"
 MANIFEST_HEADER = (
