@@ -28,6 +28,9 @@
 #                                 remove also updates the default team)
 #   scripts/teamflow trim          remove idle workers. When every worker is
 #                                 idle, stop the team like --kill
+#   scripts/teamflow view [<id>...]  gather these workers (default: all running)
+#                                 into one tiled window named view. --close
+#                                 puts each back in its own window
 #
 # Flags:
 #   --config <file>  use this workspace config instead of teamflow.conf (start, up,
@@ -1125,6 +1128,17 @@ cmd_trim() { # $1 --config value: remove idle workers from the running session
   python3 "$TOOL_HOME/scripts/teamflow_workers.py" worktrees clean "$root"
 }
 
+cmd_view() { # $1 --config value  $2 close (1|0)  $3.. worker IDs
+  local root conf_arg="$1" close="$2"
+  shift 2
+  root="$(team_root)" || exit $?
+  follow_team view "$root" "$(git_common_dir "$root")/$MAILBOX_NAME" "$conf_arg"
+  [ -n "$ACTIVE_SESSION" ] || die "no team is running, so there is nothing to view"
+  local -a args=(view "$T_CONF" "$root")
+  [ "$close" = 0 ] || args+=(--close)
+  python3 "$TOOL_HOME/scripts/teamflow_workers.py" "${args[@]}" "$@"
+}
+
 cmd_worktrees() { # $1 action (list|merge|discard) $2 instance id
   local root
   root="$(team_root)" || exit $?
@@ -1208,7 +1222,8 @@ fi
 delegate_to_tool_home "$@"
 unset TEAMFLOW_FROM_PROJECT # keep it out of the panes this run starts
 
-MODE="" NO_ATTACH=0 CONFIG="" CONFIG_GIVEN=0 WORKERS=0 WORKER_ACTION="" WORKER_VALUE="" SAVE=0 ONLY="" LAST=0
+MODE="" NO_ATTACH=0 CONFIG="" CONFIG_GIVEN=0 WORKERS=0 WORKER_ACTION="" WORKER_VALUE="" SAVE=0 ONLY="" LAST=0 CLOSE=0
+VIEW_IDS=()
 
 pick_mode() {
   [ -z "$MODE" ] || [ "$MODE" = "$1" ] || die "choose one mode: '$MODE' and '$1' cannot be combined"
@@ -1217,7 +1232,7 @@ pick_mode() {
 
 while [ $# -gt 0 ]; do
   case "$1" in
-    init|start|up|--verify|--check-models|--kill|workers|worktrees|types|trim) pick_mode "$1" ;;
+    init|start|up|--verify|--check-models|--kill|workers|worktrees|types|trim|view) pick_mode "$1" ;;
     list|add|remove|sync|merge|discard)
       # teamflow add|remove|list|sync is short for teamflow workers ...
       if [ -z "$MODE" ]; then
@@ -1234,6 +1249,7 @@ while [ $# -gt 0 ]; do
     --workers) WORKERS=1 ;;
     --save) SAVE=1 ;;
     --last) LAST=1 ;;
+    --close) CLOSE=1 ;;
     --only|--only=*)
       [ -z "$ONLY" ] || die "--only given more than once"
       if [ "$1" = --only ]; then
@@ -1261,7 +1277,9 @@ while [ $# -gt 0 ]; do
       ;;
     -h|--help) usage; exit 0 ;;
     *)
-      if [ -z "$WORKER_VALUE" ] && case "$MODE:$WORKER_ACTION" in
+      if [ "$MODE" = view ]; then
+        VIEW_IDS+=("$1")
+      elif [ -z "$WORKER_VALUE" ] && case "$MODE:$WORKER_ACTION" in
            workers:add|workers:remove|worktrees:merge|worktrees:discard) true ;; *) false ;; esac; then
         WORKER_VALUE="$1"
       else
@@ -1275,7 +1293,7 @@ done
 # teamflow skill starts the workers.
 if [ -z "$MODE" ]; then
   usage
-  [ "$NO_ATTACH$WORKERS$CONFIG_GIVEN$SAVE$LAST" = 00000 ] && [ -z "$ONLY" ] || die "choose a mode, e.g. start or up"
+  [ "$NO_ATTACH$WORKERS$CONFIG_GIVEN$SAVE$LAST$CLOSE" = 000000 ] && [ -z "$ONLY" ] || die "choose a mode, e.g. start or up"
   exit 0
 fi
 [ "$NO_ATTACH" = 0 ] || [ "$MODE" = up ] || [ "$MODE" = start ] \
@@ -1286,6 +1304,7 @@ fi
   || die "--only applies to start or up only"
 [ "$LAST" = 0 ] || [ "$MODE" = up ] || [ "$MODE" = start ] \
   || die "--last applies to start or up only"
+[ "$CLOSE" = 0 ] || [ "$MODE" = view ] || die "--close applies to view only"
 [ -z "$ONLY" ] || [ "$LAST" = 0 ] || die "choose --only or --last, not both"
 [ "$SAVE" = 0 ] || { [ "$MODE" = workers ] && { [ "$WORKER_ACTION" = add ] || [ "$WORKER_ACTION" = remove ]; }; } \
   || die "--save applies to workers add or workers remove only"
@@ -1305,4 +1324,5 @@ case "$MODE" in
   worktrees)      cmd_worktrees "$WORKER_ACTION" "$WORKER_VALUE" ;;
   types)          cmd_types "$CONFIG" ;;
   trim)           cmd_trim "$CONFIG" ;;
+  view)           cmd_view "$CONFIG" "$CLOSE" ${VIEW_IDS[@]+"${VIEW_IDS[@]}"} ;;
 esac

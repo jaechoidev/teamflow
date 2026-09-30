@@ -433,7 +433,7 @@ def window_target(record, worker_id, pane):
         index, name = tmux("display-message", "-p", "-t", pane, "#{window_index} #{window_name}").split(" ", 1)
     except (ConfigError, ValueError):
         return ""
-    return f"{record['SESSION']}:{worker_id if name == worker_id else index}"
+    return f"{record['SESSION']}:{name if name in (worker_id, 'view') else index}"
 
 
 def instances(cp, kind=None):
@@ -822,6 +822,86 @@ def worktrees_main(argv):
         raise ConfigError("usage: worktrees list|clean <root> | worktrees merge|discard <root> <id>")
 
 
+def registered_panes(root):
+    """{pane id: worker} from the pane registry, including dead panes."""
+    registry = mailbox_path(root) / "panes.tsv"
+    if not registry.exists():
+        return {}
+    return {pane: worker for worker, pane in
+            (line.split("\t", 1) for line in registry.read_text().splitlines() if "\t" in line)}
+
+
+def own_window(pane, worker):
+    """Settings every worker window gets at launch: its ID as a fixed name,
+    kept after the CLI exits, with new output flagged."""
+    tmux("rename-window", "-t", pane, worker)
+    for option, value in (("remain-on-exit", "on"), ("automatic-rename", "off"),
+                          ("allow-rename", "off"), ("monitor-activity", "on")):
+        tmux("set-window-option", "-t", pane, option, value)
+
+
+def close_view(record, root):
+    """Move every pane in the view window back into its own worker window."""
+    try:
+        listing = tmux("list-panes", "-t", f"={record['SESSION']}:view", "-F", "#{pane_id}").split()
+    except ConfigError:
+        return []
+    owners = registered_panes(root)
+    first, rest = listing[0], listing[1:]
+    for pane in rest:
+        tmux("break-pane", "-d", "-s", pane, "-n", owners.get(pane, pane.lstrip("%")))
+        own_window(pane, owners.get(pane, pane.lstrip("%")))
+    tmux("set-window-option", "-u", "-t", first, "pane-border-status")
+    tmux("set-window-option", "-u", "-t", first, "pane-border-format")
+    own_window(first, owners.get(first, first.lstrip("%")))
+    return [owners.get(pane, pane) for pane in listing]
+
+
+def view_workers(root, path, ids, close):
+    """Gather workers into one tiled window named view, or put them back."""
+    record = running_team(root, path)
+    if not record:
+        raise ConfigError("no team is running, so there is nothing to view")
+    session = record["SESSION"]
+    closed = close_view(record, root)
+    if close:
+        print(f"closed the view: {', '.join(closed)} are back in their own windows" if closed
+              else "no view is open")
+        return
+    panes = active_panes(root, record)
+    roster = [worker for worker in panes if worker != "delegator"]
+    chosen = ids or roster
+    missing = [worker for worker in chosen if worker not in panes]
+    if missing:
+        raise ConfigError(f"not running: {', '.join(missing)}. See teamflow list")
+    if not chosen:
+        raise ConfigError("no running workers to view")
+    first = panes[chosen[0]]
+    tmux("rename-window", "-t", first, "view")
+    for worker in chosen:
+        # CLIs rewrite pane titles, so the border shows a pane option instead.
+        tmux("set-option", "-p", "-t", panes[worker], "@teamflow_worker", worker)
+    for worker in chosen[1:]:
+        tmux("join-pane", "-d", "-s", panes[worker], "-t", first)
+        tmux("select-layout", "-t", first, "tiled")
+    tmux("set-window-option", "-t", first, "pane-border-status", "top")
+    tmux("set-window-option", "-t", first, "pane-border-format", " #{@teamflow_worker} ")
+    print(f"view: {', '.join(chosen)}")
+    print(f"open it: tmux attach -t {session}:view (inside tmux: tmux switch-client -t {session}:view)")
+    print("put them back in their own windows: teamflow view --close")
+
+
+def view_main(argv):
+    if len(argv) < 2:
+        raise ConfigError("usage: view <config> <root> [--close] [worker ...]")
+    config, root, rest = Path(argv[0]), Path(argv[1]), argv[2:]
+    close = "--close" in rest
+    ids = [value for value in rest if value != "--close"]
+    if close and ids:
+        raise ConfigError("--close takes no worker IDs")
+    view_workers(root, config, ids, close)
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("command", choices=["parse", "list", "add", "remove", "sync", "only", "last", "types", "trim"])
@@ -863,9 +943,11 @@ def main():
 
 if __name__ == "__main__":
     try:
-        # worktrees <action> <root> [id]; the other commands: <command> <config> <root> [id]
-        run = (lambda: worktrees_main(sys.argv[2:])) if sys.argv[1:2] == ["worktrees"] else main
-        if len(sys.argv) > 3 and sys.argv[1] in {"add", "remove", "sync", "trim", "worktrees"}:
+        # worktrees <action> <root> [id]; view <config> <root> [--close] [id ...];
+        # the other commands: <command> <config> <root> [id]
+        run = {"worktrees": lambda: worktrees_main(sys.argv[2:]),
+               "view": lambda: view_main(sys.argv[2:])}.get(sys.argv[1] if len(sys.argv) > 1 else "", main)
+        if len(sys.argv) > 3 and sys.argv[1] in {"add", "remove", "sync", "trim", "worktrees", "view"}:
             mailbox = mailbox_path(Path(sys.argv[3]))
             mailbox.mkdir(parents=True, exist_ok=True)
             with (mailbox / "workers.lock").open("a") as lock:
@@ -875,5 +957,6 @@ if __name__ == "__main__":
             code = run()
         sys.exit(code or 0)
     except (ConfigError, OSError, subprocess.CalledProcessError) as exc:
-        print(f"teamflow {'worktrees' if sys.argv[1:2] == ['worktrees'] else 'workers'}: {exc}", file=sys.stderr)
+        label = sys.argv[1] if sys.argv[1:2] in (["worktrees"], ["view"]) else "workers"
+        print(f"teamflow {label}: {exc}", file=sys.stderr)
         sys.exit(1)

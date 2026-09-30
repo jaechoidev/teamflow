@@ -76,7 +76,10 @@ plan is ready to execute, decide which workers it needs:
 
 `./scripts/teamflow list` prints a `tmux attach -t <session>:<id>` command for
 each running worker. Give the user the command for the worker they want to
-watch. Inside tmux, `tmux switch-client -t` takes the same target. Check `tmux show-options -g prefix` first,
+watch. Inside tmux, `tmux switch-client -t` takes the same target. To watch
+several workers side by side, `./scripts/teamflow view <id> <id>...` (or no
+IDs for all) gathers them into one tiled window and prints its command, and
+`./scripts/teamflow view --close` puts them back. Check `tmux show-options -g prefix` first,
 because user configurations can change the default `Ctrl-B` prefix.
 
 Before the first task to a new worker, inspect it with

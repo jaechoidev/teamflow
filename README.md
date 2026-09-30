@@ -106,6 +106,8 @@ teamflow add researcher --save      # also add it to the default team
 teamflow remove developer-m-1
 teamflow sync                       # repair the running windows
 teamflow trim                       # remove idle workers
+teamflow view developer-m-1 reviewer-1  # watch several workers in one tiled window
+teamflow view --close               # put them back in their own windows
 teamflow start --only notetaker     # a team with just one worker
 teamflow start --last               # the last session's workers again
 ```
@@ -131,6 +133,13 @@ known worker of that type is already running, for parallel work.
 `add <id>` brings back that exact worker. A plain `remove` with no team running refuses, because there is no
 session to change. With `--save` and no team running, `add` and `remove` edit
 only the default team.
+
+`view` gathers the named workers, or every running worker when none are
+named, into one tiled window called `view`, and prints the command to open
+it. Each pane is labeled with its worker ID. Workers keep running and
+receiving tasks while they are in the view, and `teamflow list` points them
+at it. `view --close` moves each one back into its own window. tmux shows a
+pane in only one window at a time, which is why gathering moves them.
 
 `trim` removes every worker without an assigned or in-progress task. The
 Notetaker stays while it writes a note or released tasks wait for it. When
