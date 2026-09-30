@@ -15,6 +15,12 @@ assert_eq "name description" "$(printf '%s\n' "$fm" | sed -n 's/^\([a-z_-]*\):.*
 assert_contains "$fm" "name: ai-team" "skill is named ai-team"
 assert_contains "$(cat "$SK" 2>/dev/null)" "up --workers --no-attach" "skill starts the workers detached"
 assert_contains "$(cat "$SK" 2>/dev/null)" "bash .agents/lib/delegator.sh task new" "skill dispatches through the helper"
+# an older launcher would start or attach the full team on `up --workers`:
+# the skill checks first, and the check passes on this launcher
+assert_contains "$(cat "$SK" 2>/dev/null)" "./scripts/ai-team --help | grep -q -- --workers" "skill checks the launcher knows workers mode"
+assert_contains "$(cat "$SK" 2>/dev/null)" "accept \`scripts/ai-team.new\`" "skill says how to get a launcher with workers mode"
+bash "$TOOL/scripts/ai-team" --help 2>/dev/null | grep -q -- --workers; ok "the skill's launcher check passes here"
+assert_contains "$(cat "$SK" 2>/dev/null)" "same Delegator outside tmux" "skill reconciles the full-team role wording"
 assert_eq "0" "$(cat "$SK" "$TOOL/.agents/lib/delegator.sh" 2>/dev/null | grep -cF "$(printf '\342\200\224')" || true)" "no em dashes in the skill or helper"
 
 command -v tmux >/dev/null 2>&1 || { echo "(tmux missing, skipped)"; finish_tests; exit 0; }
@@ -176,6 +182,25 @@ assert_contains "$(pane_line dev-mid)" "--resume $(sed -n 's/^dev-mid //p' "$STU
 run bash "$AT" up --workers --no-attach
 assert_eq "1" "$rc" "workers mode is refused while the full team runs"
 assert_contains "$out" "requested: $TGT/ai-team.conf (workers only)" "refusal names the requested mode"
+bash "$AT" --kill >/dev/null 2>&1
+
+# --- verify never binds the external Delegator to the pane registry -------------------
+# An earlier full run can leave the Delegator pending: its codex id never
+# discovered. In workers mode the user's own Codex session runs in this same
+# directory, which is all codex discovery goes by, so --verify must leave
+# the entry alone rather than record that session for the next full run.
+bash "$AT" up --workers --no-attach >/dev/null 2>&1
+sleep 1
+printf 'ROLE=delegator\nCLI=codex\nSESSION_ID=\nCWD=%s\nMODEL=gpt-fixture\nSTATUS=pending\nSNAPSHOT=%s\n' \
+  "$TGT" "$(wc -l < "$CODEX_HOME/session_index.jsonl" | tr -d ' ')" > "$MB/sessions/delegator"
+EXT="$(python3 -c 'import uuid; print(uuid.uuid4())')"
+mkdir -p "$CODEX_HOME/sessions/stub"
+printf '{"type": "session_meta", "payload": {"id": "%s", "cwd": "%s"}}\n' "$EXT" "$TGT" \
+  > "$CODEX_HOME/sessions/stub/rollout-$EXT.jsonl"
+printf '{"id": "%s", "thread_name": "external"}\n' "$EXT" >> "$CODEX_HOME/session_index.jsonl"
+bash "$AT" --verify >/dev/null 2>&1
+assert_eq "" "$(reg delegator SESSION_ID)" "verify in workers mode never records an external Codex session"
+assert_eq "pending" "$(reg delegator STATUS)" "the pending Delegator entry waits for the next full run"
 bash "$AT" --kill >/dev/null 2>&1
 
 # --- the Delegator section is optional and ignored in workers mode -------------------

@@ -932,8 +932,11 @@ cmd_verify() { # $1 --config value ('' = the running team, else the default conf
     [ -n "$pid" ] && tmux list-panes -a -F '#{pane_id}' 2>/dev/null | grep -qx "$pid" && alive="pane $pid"
     [ "$role" = delegator ] && [ "$ACTIVE_MODE" = workers ] && alive="external"
     # backfill a codex id that boot-time discovery missed (partial boot);
-    # same cwd binding as boot-time discovery — never a foreign session
-    if [ "$cli" = codex ] && [ "$(reg_get "$mailbox" "$role" STATUS)" = pending ] \
+    # same cwd binding as boot-time discovery, never a foreign session.
+    # Not for an external Delegator: the user's own Codex session may run in
+    # this directory, and cwd is all discovery goes by.
+    if [ "$cli" = codex ] && [ "$alive" != external ] \
+       && [ "$(reg_get "$mailbox" "$role" STATUS)" = pending ] \
        && [ -z "$(reg_get "$mailbox" "$role" SESSION_ID)" ]; then
       bid="$(codex_new_ids_since "$(reg_get "$mailbox" "$role" SNAPSHOT)" "$(reg_get "$mailbox" "$role" CWD)")"
       [ -n "$bid" ] && reg_set_codex_id "$mailbox" "$role" "$bid"

@@ -17,9 +17,23 @@ the user for the ai-team tool home, run
 `bash <tool-home>/scripts/ai-team init`, and let the user review and commit
 the scaffold. The launcher needs at least one commit.
 
-Read `.agents/roles/delegator.md` and `AGENTS.md` and follow them. Where they
-show `bash "$AGENT_LIB_DIR/task.sh" ...` or `pane.sh ...`, use the helper in
-step 3 instead.
+Then check that the launcher knows workers mode:
+
+```
+./scripts/ai-team --help | grep -q -- --workers
+```
+
+If this fails, the launcher is older and would start the full team, or
+attach to it, instead. Stop and tell the user to rerun
+`bash <tool-home>/scripts/ai-team init` and accept `scripts/ai-team.new`
+(review it, then move it over `scripts/ai-team`).
+
+Read `.agents/roles/delegator.md` and `AGENTS.md` and follow them. They
+describe the full team, where the Delegator has the left pane and runs
+Codex. In workers mode you are that same Delegator outside tmux, with no
+pane and whatever CLI you are. Everything else applies unchanged. Where
+they show `bash "$AGENT_LIB_DIR/task.sh" ...` or `pane.sh ...`, use the
+helper in step 3 instead.
 
 ## 2. Start the workers
 
