@@ -30,5 +30,5 @@ common="$(git -C "$lib" rev-parse --path-format=absolute --git-common-dir 2>/dev
   || fail "$lib is not inside a git repository"
 
 export AGENT_ROLE=delegator AGENT_ID="${AGENT_ID:-delegator}" \
-  AGENT_MAILBOX="$common/ai-team" AGENT_LIB_DIR="$lib"
+  AGENT_MAILBOX="$common/teamflow" AGENT_LIB_DIR="$lib"
 exec bash "$lib/$tool.sh" "$@"

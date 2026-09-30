@@ -18,14 +18,37 @@ The `teamflow` shell alias points to this repo's `scripts/teamflow`. Run
 missing, it runs `init` first. You can run `init` separately to prepare the
 project without launching workers. From this tool home, `init` creates a Git
 repository when needed. It copies
-`scripts/teamflow`, `scripts/teamflow_workers.py`, and `.agents/` (roles, lib, doc templates,
-AGENTS-SECTION.md), writes `teamflow.conf` only when absent, and updates
-only the marked AGENTS.md section. If the repository has no commit, `init`
+`scripts/teamflow`, `scripts/teamflow_workers.py`, `scripts/teamflow_scaffold.py`,
+and `.agents/` (roles, lib, doc templates, AGENTS-SECTION.md), writes
+`teamflow.conf` only when absent, and updates only the marked AGENTS.md
+section. If the repository has no commit, `init`
 makes a first commit containing only the teamflow scaffold. Existing staged
 or untracked project files stay outside that commit. Existing repositories
 with a commit are never committed by `init`. The first commit gives the
 launcher a HEAD for developer worktrees. `start` launches workers mode
 without attaching to the tmux session.
+
+## Updates and upgrades
+
+One version of teamflow drives a team. When the tool home runs `init`,
+`start`, `up`, or `workers` for a project, it first refreshes the project's
+copies of the shipped files. A copy is replaced only while it is unmodified:
+it matches the version recorded in `.agents/teamflow-manifest` or any
+version committed in the tool home. A locally edited copy is kept, and the
+shipped version lands next to it as `<file>.new` for review. The tool home
+also records itself in `.git/teamflow/tool-home`. From then on the project's
+own `scripts/teamflow`, which the skills call, hands every command to that
+tool home while it is unmodified. Refreshed files show up in `git status`.
+Review and commit them like any other change.
+
+Versions before the rename kept their state under the name ai-team. The
+first `init`, `start`, `up`, or `workers` command moves it:
+`.git/ai-team/` becomes `.git/teamflow/`, worktrees move from
+`.ai-team-worktrees/` to `.teamflow-worktrees/`, `ai-team/<id>` branches
+become `teamflow/<id>`, and the AGENTS.md markers are renamed. A team still
+running from the old state is refused until `--kill`. Developer
+conversations restart after the move, because Claude files a transcript
+under the directory it ran in.
 
 ## Pane map
 
@@ -60,13 +83,17 @@ teamflow workers list
 teamflow workers add developer-m
 teamflow workers add researcher
 teamflow workers remove developer-m-1
+teamflow workers sync
 ```
 
 Instances have stable numbered IDs for tasks, panes, conversations, worktrees,
 and branches. Removal preserves history and worktrees. It refuses an unfinished
-assigned task and cannot remove the last regular worker. Config changes take
-effect after `teamflow --kill` and `teamflow start`. These commands do not
-restart the team. Use `--config <file>` to manage a variant.
+assigned task and cannot remove the last regular worker. Adding a worker launches
+its pane in the running team. Removing a worker closes its pane immediately.
+Other workers keep running. When the team is stopped, commands update the config
+for the next start. Use `workers sync` after editing roster sections directly.
+Changes to settings of running workers (model, effort, CLI, or role file) require
+a restart. Use `--config <file>` to manage a variant.
 
 ## Choosing a config
 
@@ -89,14 +116,15 @@ everything behaves as before.
 **Paths.** An absolute path is used as given, and a leading `~/` means
 your home directory. A relative path resolves from the repo root, never
 from the current directory. The same spelling therefore names the same
-file from a subdirectory and from a team worktree under
-`.ai-team-worktrees/`. When the file is missing, the error prints the
+file from a subdirectory and from any linked worktree, such as a team
+worktree under
+`.teamflow-worktrees/`. When the file is missing, the error prints the
 full path the launcher looked for.
 
 **One team per repo.** The mailbox and the role worktrees belong to the
 repo, not to a config, so two configs cannot run side by side. The
 launcher records the running session and the config that started it in
-`.git/ai-team/active` and checks it before it touches anything:
+`.git/teamflow/active` and checks it before it touches anything:
 
 - `up` with the config that started the running team reattaches.
 - `up` with any other config stops, names both configs, and changes
@@ -148,7 +176,7 @@ message.
 
 Conversations follow the CLI. The Claude Delegator starts its own
 conversation and never resumes the Codex id. The Codex entry is parked
-as `.git/ai-team/sessions/delegator.codex`, and the next launch with
+as `.git/teamflow/sessions/delegator.codex`, and the next launch with
 `teamflow.conf` resumes it. Instances with the same ID and CLI in both
 configs keep their conversations across the switch. Each variant may choose
 its own roster and type settings.
@@ -182,13 +210,14 @@ EOF
 bash .agents/lib/delegator.sh pane send-to developer-l-1 "Task T-0001: Title. Details: task.sh read T-0001"
 bash .agents/lib/delegator.sh task inbox delegator
 bash .agents/lib/delegator.sh task release T-0001 abc1234
-cat .git/ai-team/note-queue/completed/T-0001.md
+cat .git/teamflow/note-queue/completed/T-0001.md
 ```
 
 It refuses to run inside a worker pane. `init` copies the `teamflow`,
 `teamflow-resume`, `teamflow-kill`, and `teamflow-workers` skills from the tool home into the project's `.agents/skills/`
-for Codex and `.claude/skills/` for Claude Code. Re-running `init` preserves
-local skill edits and stages changed shipped files as `.new` for review.
+for Codex and `.claude/skills/` for Claude Code. Later runs refresh
+unmodified copies and stage `.new` files for local edits (see Updates and
+upgrades).
 
 ## Prerequisites
 
@@ -233,7 +262,7 @@ local skill edits and stages changed shipped files as `.new` for review.
 ## Integrating approved work
 
 Concurrent work is isolated by construction: each developer instance commits to
-its own branch `ai-team/<instance-id>` in its own worktree, one commit per
+its own branch `teamflow/<instance-id>` in its own worktree, one commit per
 completed task, and task scopes are assigned not to overlap. The role
 finishes and reports its commit. The Delegator inspects the full diff and
 integrates a small, obvious change after a relevant check. Broader or
@@ -245,19 +274,19 @@ has your approval; nothing is pushed without your explicit go-ahead.
 # Inspect one role's work (read-only, no checkout needed). The Delegator
 # or Reviewer uses these commands. An empty log means the role has
 # nothing to integrate: skip it.
-git -C .ai-team-worktrees/developer-l-1 log --oneline main..ai-team/developer-l-1
-git -C .ai-team-worktrees/developer-l-1 diff main...ai-team/developer-l-1
-git -C .ai-team-worktrees/developer-l-1 diff --name-only main...ai-team/developer-l-1
+git -C .teamflow-worktrees/developer-l-1 log --oneline main..teamflow/developer-l-1
+git -C .teamflow-worktrees/developer-l-1 diff main...teamflow/developer-l-1
+git -C .teamflow-worktrees/developer-l-1 diff --name-only main...teamflow/developer-l-1
 
 # Integrate exactly one role after Reviewer approval or a documented
 # Delegator self-review of a small, obvious change.
 # The main checkout must be clean before starting.
 git status --short                 # in the main checkout: no output = clean
 git checkout main
-git cherry-pick main..ai-team/developer-l-1
+git cherry-pick main..teamflow/developer-l-1
 # or squash into one commit. Both paths stop on conflict instead of
 # overwriting:
-# git -C .ai-team-worktrees/developer-l-1 diff main...ai-team/developer-l-1 | git apply --3way
+# git -C .teamflow-worktrees/developer-l-1 diff main...teamflow/developer-l-1 | git apply --3way
 # git commit -m "type(scope): subject for the whole task"
 
 # Run the project's relevant checks before integrating the next role.
@@ -265,8 +294,8 @@ git cherry-pick main..ai-team/developer-l-1
 # Optional: refresh the other roles' worktrees so later work rebases onto
 # the updated main and future patches apply cleanly. Rebase a role's
 # worktree only when it is idle (its CLI not mid-task) and clean
-# (git -C .ai-team-worktrees/<instance-id> status shows nothing).
-git -C .ai-team-worktrees/developer-l-1 rebase main
+# (git -C .teamflow-worktrees/<instance-id> status shows nothing).
+git -C .teamflow-worktrees/developer-l-1 rebase main
 ```
 
 Because integration goes through `cherry-pick` or `git apply --3way`, a
@@ -277,14 +306,18 @@ reviewed work enters main; nothing is pushed without your approval.
 ## Where things live
 
 - `.agents/roles/*.md` — role instructions (static; injected at launch)
-- `.git/ai-team/` — the mailbox: `tasks/<id>/{task.md,result.md,status}`,
+- `.git/teamflow/` — the mailbox: `tasks/<id>/{task.md,result.md,status}`,
   `acks/`, `panes.tsv`, `sends.log`, `sessions/<instance-id>` (per-role conversation
   registry; runtime state; excluded from git; instantly visible to all
   worktrees because it sits in the git common dir)
-- `.git/ai-team/active` - the running session and the config that
-  started it. `.git/ai-team/sessions/<instance-id>.<cli>` - a conversation
-  parked while that role runs another CLI.
-- `.ai-team-worktrees/<instance-id>` + branches `ai-team/<instance-id>` — developer panes
+- `.git/teamflow/active` - the running session and the config that
+  started it. `.git/teamflow/sessions/<instance-id>.<cli>` - a conversation
+  parked while that role runs another CLI. `.git/teamflow/tool-home` - the
+  tool home that last refreshed this project (see Updates and upgrades).
+- `.agents/teamflow-manifest` - blob ids of the shipped files as installed,
+  so a later refresh can tell unmodified copies from local edits
+- `scripts/teamflow_scaffold.py` - installs, refreshes, and migrates the scaffold
+- `.teamflow-worktrees/<instance-id>` + branches `teamflow/<instance-id>` — developer panes
   (created only if absent, never reset)
 - Repo-root `AGENTS.md` — shared coordination rules (marked section,
   `teamflow init` owns only the markers)
@@ -313,7 +346,7 @@ folder without configuring Obsidian.
 
 Each pane's CLI conversation survives `--kill` and relaunch. On a fresh `up`
 (read: the tmux session is gone) the launcher consults the per-role registry
-`.git/ai-team/sessions/<instance-id>` and never touches a live session (reattach
+`.git/teamflow/sessions/<instance-id>` and never touches a live session (reattach
 still wins):
 
 - **Claude / z.ai panes** boot with an explicit `--session-id` (a UUID the
@@ -363,7 +396,7 @@ still wins):
   records this workspace's cwd (`session_meta.payload.cwd`), so unrelated
   codex sessions elsewhere never win; only a same-directory codex session
   started in the same seconds could still race discovery (delete
-  `.git/ai-team/sessions/delegator` to reset, or let `--verify` backfill).
+  `.git/teamflow/sessions/delegator` to reset, or let `--verify` backfill).
   Two concurrent `up` runs in different terminals could resume the same id
   twice — run one at a time.
 - **Config selection**: a config is identified by its file path. Editing

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# pane.sh — address tmux panes by stable role for the ai-team workspace.
+# pane.sh — address tmux panes by stable role for the teamflow workspace.
 #
 # Commands:
 #   send-to <role> <text...>   type text into that role's pane + Enter.

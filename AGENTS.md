@@ -2,7 +2,7 @@
 
 This repo is the home of the `teamflow` tool: a portable tmux workspace launcher. See README.md for usage. Other projects adopt it with `teamflow init`.
 
-# >>> ai-team >>>
+# >>> teamflow >>>
 # Managed by `teamflow init` — edit roles in .agents/roles/, coordination here.
 
 ## AI team workspace
@@ -26,7 +26,7 @@ Rules:
 - Workers act only when the user or the delegator assigns a task. No
   self-started work; no startup chatter.
 - All coordination goes through the mailbox (`$AGENT_MAILBOX`, under
-  `.git/ai-team/`): `bash "$AGENT_LIB_DIR/task.sh" new|take|done|read|status|inbox|ack`.
+  `.git/teamflow/`): `bash "$AGENT_LIB_DIR/task.sh" new|take|done|read|status|inbox|ack`.
 - Results are read from task records, never assumed from pane text.
 - Nothing is ever typed into the Delegator session: `pane.sh send-to delegator`
   is rejected; completions surface via `task.sh inbox delegator`.
@@ -34,8 +34,8 @@ Rules:
   runs `task.sh release <id> [commit]`. The Notetaker investigates one
   released task at a time, then runs `task.sh noted <id> <summary>` to remove
   that task record and receive the next one.
-- Developers work in separate worktrees (`.ai-team-worktrees/<instance-id>`,
-  branches `ai-team/<instance-id>`). Avoid overlapping concurrent edits; coordinate scope.
+- Developers work in separate worktrees (`.teamflow-worktrees/<instance-id>`,
+  branches `teamflow/<instance-id>`). Avoid overlapping concurrent edits; coordinate scope.
 - The Delegator integrates each task commit after Reviewer approval, or after
   its own review for a small, obvious change with local effects and a clear
   check. It inspects the full diff, verifies the change, and reports the
@@ -52,4 +52,4 @@ Rules:
   Agents may propose memory questions. Only the user writes own-words
   explanations and answers.
 - Keep task logs concise; never put secrets in them.
-# <<< ai-team <<<
+# <<< teamflow <<<

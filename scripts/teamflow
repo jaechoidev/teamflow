@@ -2,9 +2,9 @@
 # teamflow - portable tmux workspace launcher.
 #
 # Modes:
-#   scripts/teamflow init          create a git repo if needed, install the
-#                                 scaffold, and make the first scaffold commit
-#                                 when the repo has no commits
+#   scripts/teamflow init          create a git repo if needed, install or refresh
+#                                 the scaffold, and make the first scaffold
+#                                 commit when the repo has no commits
 #   scripts/teamflow start         initialize the project if needed, then launch
 #                                 configured worker panes detached
 #   scripts/teamflow up            launch (resumes role conversations) or reattach
@@ -12,7 +12,7 @@
 #   scripts/teamflow --check-models  probe configured models (spends a little
 #                                 quota; clean env, zai panes source zai_env)
 #   scripts/teamflow --kill        kill the workspace session
-#   scripts/teamflow workers list|add|remove  manage worker instances
+#   scripts/teamflow workers list|add|remove|sync  manage worker instances
 #
 # Flags:
 #   --config <file>  use this workspace config instead of teamflow.conf (start, up,
@@ -39,9 +39,13 @@
 #   not to a config. <mailbox>/active records the running session, the
 #   config that started it, and its mode (full or workers). Another config
 #   or mode is refused until --kill.
+# - One version per team: run from the tool home, start, up, and workers
+#   refresh the project's unmodified copies of the shipped files and record
+#   the tool home. The project's own copy then hands each call to it.
 set -u
 
 TOOL_HOME="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+MAILBOX_NAME=teamflow # the mailbox lives at <git-common-dir>/teamflow
 
 die() { echo "teamflow: $*" >&2; exit 1; }
 say() { echo "teamflow: $*" >&2; }
@@ -78,19 +82,18 @@ git_common_dir() { # absolute path to the shared .git dir (works in worktrees)
 # team_root and resolve_conf below follow the same rule.
 
 team_root() { # the checkout that owns the team
-  # Team worktrees live at <root>/.ai-team-worktrees/<name>. Invoked from
-  # one, the launcher acts on <root>: same session, same mailbox, and the
-  # same config paths as from the checkout itself.
-  local top parent owner
+  # The team belongs to the repository, so it lives in the main checkout.
+  # Invoked from any linked worktree (a worker's .teamflow-worktrees/<id>,
+  # or an agent's own worktree), the launcher acts on the main checkout:
+  # same session, same mailbox, same config, and the same worktree paths.
+  local top main
   top="$(repo_root)" || exit $?
-  parent="$(dirname "$top")"
-  if [ "$(basename "$parent")" = ".ai-team-worktrees" ]; then
-    owner="$(dirname "$parent")"
-    if [ "$(git -C "$owner" rev-parse --show-toplevel 2>/dev/null)" = "$owner" ] \
-       && [ "$(git -C "$owner" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)" \
-            = "$(git -C "$top" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)" ]; then
-      top="$owner"
-    fi
+  main="$(git -C "$top" worktree list --porcelain 2>/dev/null \
+    | awk 'NR == 1 && sub(/^worktree /, "") { print; exit }')"
+  # A bare main repository has no checkout to own the team.
+  if [ -n "$main" ] && ! path_eq "$main" "$top" \
+     && [ "$(git -C "$main" rev-parse --is-bare-repository 2>/dev/null)" = false ]; then
+    top="$main"
   fi
   printf '%s\n' "$top"
 }
@@ -174,17 +177,53 @@ ensure_exclude() { # $1 common-dir  $2 pattern — keep runtime state out of git
 # environment, or extend this list.
 CLAUDE_ROUTING_VARS="ANTHROPIC_BASE_URL ANTHROPIC_AUTH_TOKEN ANTHROPIC_API_KEY ANTHROPIC_MODEL ANTHROPIC_SMALL_FAST_MODEL ANTHROPIC_DEFAULT_HAIKU_MODEL ANTHROPIC_DEFAULT_SONNET_MODEL ANTHROPIC_DEFAULT_OPUS_MODEL ANTHROPIC_CUSTOM_HEADERS API_TIMEOUT_MS"
 
-install_file() { # $1 src $2 dst — user-edited files win; shipped copy staged as <dst>.new
-  if [ ! -e "$2" ]; then
-    cp "$1" "$2"
-  elif ! cmp -s "$1" "$2"; then
-    cp "$1" "$2.new"
-    say "$(basename "$2") already exists and differs — kept yours; shipped copy at $2.new"
+install_scaffold() { # $1 root -> installed project paths on stdout
+  # Unmodified copies follow the tool home. Local edits win, and the shipped
+  # copy is staged as <file>.new (see scripts/teamflow_scaffold.py).
+  python3 "$TOOL_HOME/scripts/teamflow_scaffold.py" install "$TOOL_HOME" "$1"
+}
+
+# prepare_project <root>: before a mode acts on a project, move state left
+# by older versions (the ai-team names). From the tool home, also refresh
+# the project's unmodified copies and remember this tool home, so the
+# project's own scripts/teamflow hands later calls to it. Runs once.
+PREPARED=""
+prepare_project() {
+  local root="$1" common
+  [ "$PREPARED" = "$root" ] && return 0
+  common="$(git_common_dir "$root")" || exit $?
+  python3 "$TOOL_HOME/scripts/teamflow_scaffold.py" migrate "$root" "$common" || exit 1
+  if ! path_eq "$root" "$TOOL_HOME" && [ -f "$root/scripts/teamflow" ]; then
+    install_scaffold "$root" >/dev/null || exit 1
+    mkdir -p "$common/$MAILBOX_NAME" || die "cannot create mailbox at $common/$MAILBOX_NAME"
+    printf '%s\n' "$TOOL_HOME" > "$common/$MAILBOX_NAME/tool-home"
   fi
+  PREPARED="$root"
+}
+
+# A project's own scripts/teamflow hands every call to the tool home that
+# installed it, while that copy is unmodified. The teamflow command, the
+# skills, and ./scripts/teamflow then run one version against one team.
+delegate_to_tool_home() { # "$@" = the original arguments
+  local common own home
+  [ -z "${TEAMFLOW_FROM_PROJECT:-}" ] || return 0
+  common="$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null)" || return 0
+  # Only a copy inside this repository (any of its checkouts) hands off.
+  own="$(git -C "$TOOL_HOME" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)" || return 0
+  path_eq "$own" "$common" || return 0
+  home="$(head -1 "$common/$MAILBOX_NAME/tool-home" 2>/dev/null)"
+  [ -n "$home" ] && ! path_eq "$home" "$TOOL_HOME" \
+    && [ -f "$home/scripts/teamflow" ] && [ -f "$home/scripts/teamflow_scaffold.py" ] || return 0
+  if ! cmp -s "$home/scripts/teamflow" "$TOOL_HOME/scripts/teamflow" \
+     && ! python3 "$home/scripts/teamflow_scaffold.py" pristine "$home" "$TOOL_HOME" scripts/teamflow; then
+    say "scripts/teamflow has local edits, so it runs as is instead of the copy in $home"
+    return 0
+  fi
+  TEAMFLOW_FROM_PROJECT=1 exec bash "$home/scripts/teamflow" "$@"
 }
 
 # ---------- per-role conversation registry ---------------------------------------
-# <git-common-dir>/ai-team/sessions/<role>: shell-sourceable KEY=VALUE lines
+# <git-common-dir>/teamflow/sessions/<role>: shell-sourceable KEY=VALUE lines
 # (ROLE, CLI, SESSION_ID, CWD, MODEL, STATUS, STARTED_AT, UPDATED_AT, and
 # SNAPSHOT for codex discovery). One file per role, written only by the
 # launcher. Stores ids and metadata only — never tokens, never transcript
@@ -444,80 +483,56 @@ follow_team() {
 # ---------- init ---------------------------------------------------------------
 
 cmd_init() {
-  local root src skills_src bootstrap=0
-  if root="$(git rev-parse --show-toplevel 2>/dev/null)"; then
-    :
+  local root common installed path bootstrap=0
+  if git rev-parse --show-toplevel >/dev/null 2>&1; then
+    root="$(team_root)" || exit $?
   else
     root="$(pwd -P)"
     git init -q -b main "$root" || die "cannot initialize git in $root"
     say "created git repository in $root"
   fi
   git -C "$root" rev-parse --verify HEAD >/dev/null 2>&1 || bootstrap=1
-  src="$TOOL_HOME"
-  skills_src="$src/skills"
-  [ -d "$skills_src" ] || skills_src="$src/.agents/skills"
-  [ -f "$src/.agents/AGENTS-SECTION.md" ] || die "tool files incomplete at $src (missing .agents/AGENTS-SECTION.md)"
+  common="$(git_common_dir "$root")" || exit $?
+  python3 "$TOOL_HOME/scripts/teamflow_scaffold.py" migrate "$root" "$common" || exit 1
 
-  mkdir -p "$root/.agents/roles" "$root/.agents/lib" "$root/.agents/doc-templates" "$root/scripts"
-  local f skill rel scope
-  local -a scaffold=(teamflow.conf AGENTS.md scripts/teamflow .agents/AGENTS-SECTION.md \
-    .agents/lib/task.sh .agents/lib/pane.sh .agents/lib/delegator.sh .agents/lib/note-queue.sh \
-    scripts/teamflow_workers.py)
-  for f in "$src"/.agents/roles/*.md; do
-    install_file "$f" "$root/.agents/roles/$(basename "$f")"
-    scaffold+=(".agents/roles/$(basename "$f")")
-  done
-  for f in "$src"/.agents/doc-templates/*.md; do
-    install_file "$f" "$root/.agents/doc-templates/$(basename "$f")"
-    scaffold+=(".agents/doc-templates/$(basename "$f")")
-  done
-  for skill in teamflow teamflow-resume teamflow-kill teamflow-workers; do
-    [ -f "$skills_src/$skill/SKILL.md" ] || die "tool files incomplete at $src (missing skills/$skill/SKILL.md)"
-    while IFS= read -r -d '' f; do
-      rel="${f#"$skills_src/$skill/"}"
-      for scope in .agents .claude; do
-        mkdir -p "$root/$scope/skills/$skill/$(dirname "$rel")"
-        install_file "$f" "$root/$scope/skills/$skill/$rel"
-        scaffold+=("$scope/skills/$skill/$rel")
-      done
-    done < <(find "$skills_src/$skill" -type f ! -name '*.new' -print0)
-  done
-  install_file "$src/.agents/lib/task.sh" "$root/.agents/lib/task.sh"
-  install_file "$src/.agents/lib/pane.sh" "$root/.agents/lib/pane.sh"
-  install_file "$src/.agents/lib/delegator.sh" "$root/.agents/lib/delegator.sh"
-  install_file "$src/.agents/lib/note-queue.sh" "$root/.agents/lib/note-queue.sh"
-  install_file "$src/.agents/AGENTS-SECTION.md" "$root/.agents/AGENTS-SECTION.md"
-  install_file "$src/scripts/teamflow" "$root/scripts/teamflow"
-  install_file "$src/scripts/teamflow_workers.py" "$root/scripts/teamflow_workers.py"
-  chmod +x "$root/scripts/teamflow" "$root/.agents/lib/"*.sh
-  [ -f "$root/scripts/teamflow.new" ] && chmod +x "$root/scripts/teamflow.new"
+  local -a scaffold=(teamflow.conf AGENTS.md)
+  installed="$(install_scaffold "$root")" || exit 1
+  while IFS= read -r path; do
+    [ -n "$path" ] && scaffold+=("$path")
+  done <<EOF
+$installed
+EOF
 
   if [ ! -e "$root/teamflow.conf" ]; then
-    cp "$src/teamflow.conf" "$root/teamflow.conf"
+    cp "$TOOL_HOME/teamflow.conf" "$root/teamflow.conf"
     say "wrote teamflow.conf (user-owned: edit worker types and instances here; init never overwrites it)"
   else
-    say "teamflow.conf already present — left untouched"
+    say "teamflow.conf already present, left untouched"
     if ! grep -q '^\[worker\.notetaker\]' "$root/teamflow.conf"; then
-      say "add a Notetaker section from $src/teamflow.conf to enable the note queue"
+      say "add a Notetaker section from $TOOL_HOME/teamflow.conf to enable the note queue"
     fi
   fi
 
   # AGENTS.md marked section: replace if present, else append; never touch
-  # anything outside the markers.
+  # anything outside the markers. Older versions marked it ai-team.
   python3 - "$root" <<'PY'
 import sys, os, re
 root = sys.argv[1]
 section = open(os.path.join(root, ".agents/AGENTS-SECTION.md")).read()
 ag = os.path.join(root, "AGENTS.md")
-s = open(ag).read() if os.path.exists(ag) else ""
-s = re.sub(r"\n?# >>> ai-team >>>.*?# <<< ai-team <<<\n?", "\n", s, flags=re.S)
+old = open(ag).read() if os.path.exists(ag) else ""
+s = re.sub(r"\n?# >>> (?:teamflow|ai-team) >>>.*?# <<< (?:teamflow|ai-team) <<<\n?", "\n", old, flags=re.S)
 s = s.rstrip("\n") + ("\n\n" if s.strip() else "") + section.rstrip("\n") + "\n"
-open(ag, "w").write(s)
+if s != old:
+    open(ag, "w").write(s)
 PY
 
-  local common
-  common="$(git_common_dir "$root")" || exit $?
-  ensure_exclude "$common" ".ai-team-worktrees/"
+  ensure_exclude "$common" ".teamflow-worktrees/"
+  if ! path_eq "$root" "$TOOL_HOME"; then
+    mkdir -p "$common/$MAILBOX_NAME" || die "cannot create mailbox at $common/$MAILBOX_NAME"
+    printf '%s\n' "$TOOL_HOME" > "$common/$MAILBOX_NAME/tool-home"
+  fi
+  PREPARED="$root"
 
   say "initialized in $root"
   if [ "$bootstrap" = 1 ]; then
@@ -534,7 +549,9 @@ PY
 
 cmd_start() { # $1 --config value ('' = default config)
   local root=""
-  root="$(git rev-parse --show-toplevel 2>/dev/null)" || root=""
+  if git rev-parse --show-toplevel >/dev/null 2>&1; then
+    root="$(team_root)" || exit $?
+  fi
   if [ -z "$root" ] || [ ! -f "$root/scripts/teamflow" ] \
      || [ ! -f "$root/.agents/lib/delegator.sh" ] \
      || [ ! -f "$root/teamflow.conf" ] \
@@ -542,6 +559,108 @@ cmd_start() { # $1 --config value ('' = default config)
     cmd_init
   fi
   cmd_up 0 "$1" 1
+}
+
+# Shared worker conversation and launch preparation.
+pane_cmd() { # role cli model effort cwd rolefile sid mode type -> pane shell command
+  local prole="$1" pcli="$2" pmodel="$3" peffort="$4" pcwd="$5" pfile="$6" psid="$7" pmode="$8" ptype="$9"
+  local envs qfile qmailbox qlib sflag
+  qfile="$(shell_quote "$pfile")"
+  qmailbox="$(shell_quote "$mailbox")"
+  qlib="$(shell_quote "$lib_dir")"
+  # export (a shell builtin) rather than the env binary: the zai pane starts
+  # with `.` (source), which env cannot execute.
+  envs="export AGENT_ROLE=$(shell_quote "$prole") AGENT_WORKER_TYPE=$(shell_quote "$ptype") AGENT_ID=$(shell_quote "$sess-$prole") \
+AGENT_ROLE_FILE=$qfile AGENT_MAILBOX=$qmailbox AGENT_LIB_DIR=$qlib;"
+  local base="" bin
+  sflag="--session-id"
+  [ "$pmode" = resume ] && sflag="--resume"
+  # The Delegator is the user's interface: a fresh one acknowledges and
+  # reports READY by itself, whatever CLI runs it. claude and zai carry
+  # the role file in the system prompt, so their first message skips it
+  # (codex has no such flag and gets the file named in its prompt below).
+  # Workers get no message and idle until addressed. The notetaker
+  # checks the note queue after boot, including after a restart. A resumed
+  # conversation has had its handshake. The message is quoted as a whole:
+  # it reaches the CLI as one argument whatever the paths contain.
+  local hello=""
+  if [ "$prole" = delegator ] && [ "$pmode" != resume ]; then
+    hello=" $(shell_quote "You are the team Delegator. Your role file is loaded in the system prompt. \
+Read AGENTS.md in $(shell_quote "$pcwd"), run: bash $qlib/task.sh ack, and reply READY only.")"
+  fi
+  if [ "$prole" = notetaker ]; then
+    hello=" $(shell_quote "You are the team Notetaker. Read your role file and AGENTS.md, then run: bash $qlib/task.sh ack; bash $qlib/note-queue.sh resume. Reply READY only if no note task is waiting.")"
+  fi
+  case "$pcli" in
+    codex)
+      bin="$(shell_quote "$CODEX_BIN")"
+      # Reasoning effort has no --effort flag on codex. It rides as a -c
+      # config override. shell_quote keeps the configured value a single
+      # safe word. Empty effort means: let codex use its own default.
+      local qeff=""
+      [ -n "$peffort" ] && qeff="-c model_reasoning_effort=$(shell_quote "$peffort")"
+      # Full access mode (user request): no approval prompts, no sandbox.
+      if [ "$pmode" = resume ]; then
+        # explicit-id resume: flags belong to the resume subcommand
+        # (codex-cli 0.156.1 help); never --last/--continue (picker would
+        # be cwd-scoped across roles).
+        base="$bin resume $(shell_quote "$psid") --dangerously-bypass-approvals-and-sandbox -m $(shell_quote "$pmodel") $qeff -C $(shell_quote "$pcwd")"
+      else
+        base="$bin --dangerously-bypass-approvals-and-sandbox -m $(shell_quote "$pmodel") $qeff \
+$(shell_quote "You are the team $prole. Read $pfile and AGENTS.md in $pcwd. Run: bash $qlib/task.sh ack. $([ "$prole" = notetaker ] && printf 'Then run: bash %s/note-queue.sh resume.' "$qlib") Reply READY only if no task is waiting.")"
+      fi
+      ;;
+    claude)
+      bin="$(shell_quote "$CLAUDE_BIN")"
+      base="unset $CLAUDE_ROUTING_VARS; $bin $sflag $(shell_quote "$psid") --model $(shell_quote "$pmodel")"
+      [ -n "$peffort" ] && base="$base --effort $(shell_quote "$peffort")"
+      base="$base --append-system-prompt-file $qfile$hello"
+      ;;
+    zai)
+      bin="$(shell_quote "$CLAUDE_BIN")"
+      base="unset $CLAUDE_ROUTING_VARS; . $(shell_quote "$zai_env") && $bin $sflag $(shell_quote "$psid") --model $(shell_quote "$pmodel")"
+      [ -n "$peffort" ] && base="$base --effort $(shell_quote "$peffort")"
+      base="$base --append-system-prompt-file $qfile$hello"
+      ;;
+  esac
+  printf '%s %s' "$envs" "$base"
+}
+
+
+prepare_worker() {
+  # Resume only this instance's recorded conversation. Panes may share a
+  # directory, so --continue and --last could select another worker.
+  local sid mode status snap="" was_cwd
+  reg_follow_cli "$mailbox" "$role" "$cli"
+  sid="$(reg_get "$mailbox" "$role" SESSION_ID)"
+  was_cwd="$(reg_get "$mailbox" "$role" CWD)"
+  case "$cli" in
+    claude|zai)
+      # Claude files a transcript under the directory it ran in, so resume
+      # only there. A moved worktree starts a new conversation.
+      if claude_session_exists "$sid" && { [ -z "$was_cwd" ] || path_eq "$was_cwd" "$cwd"; }; then
+        mode=resume
+      else mode=fresh; sid="$(new_uuid)"; fi ;;
+    codex)
+      if codex_session_exists "$sid"; then mode=resume
+      else
+        mode=fresh; sid=""
+        snap="$(wc -l < "${CODEX_HOME:-$HOME/.codex}/session_index.jsonl" 2>/dev/null | tr -d ' ')"
+      fi ;;
+  esac
+  status=live
+  [ "$mode" = fresh ] && status=pending
+  local -a reg=(ROLE="$role" CLI="$cli" SESSION_ID="$sid" CWD="$cwd" MODEL="$model" \
+    STATUS="$status" UPDATED_AT="$(now_utc)")
+  [ "$mode" = fresh ] && reg+=(STARTED_AT="$(now_utc)" SNAPSHOT="$snap")
+  reg_write "$mailbox" "$role" "${reg[@]}"
+
+  local resolved_role_file="$root/.agents/roles/$role.md"
+  [ -n "$role_file" ] && resolved_role_file="$root/$role_file"
+  if [ -z "$role_file" ] && [ ! -f "$resolved_role_file" ]; then
+    resolved_role_file="$TOOL_HOME/.agents/roles/$role.md"
+  fi
+  worker_command="$(pane_cmd "$role" "$cli" "$model" "$effort" "$cwd" "$resolved_role_file" "$sid" "$mode" "$worker_type")"
 }
 
 # ---------- up -----------------------------------------------------------------
@@ -555,6 +674,7 @@ cmd_up() { # $1 attach (1|0)  $2 --config value ('' = default config)  $3 worker
 
   local root conf
   root="$(team_root)" || exit $?
+  prepare_project "$root"
   conf="$(resolve_conf "$root" "$conf_arg")" || exit $?
 
   local confout prefix zai_env_raw
@@ -570,7 +690,7 @@ cmd_up() { # $1 attach (1|0)  $2 --config value ('' = default config)  $3 worker
   # config and mode that started it reattach. Anything else is refused.
   local common mailbox dconf
   common="$(git_common_dir "$root")" || exit $?
-  mailbox="$common/ai-team"
+  mailbox="$common/$MAILBOX_NAME"
   dconf="$(default_conf "$root")"
   find_active "$mailbox" "$dconf" "$sess" "$(conf_session "$root" "$dconf")"
   if [ -n "$ACTIVE_SESSION" ]; then
@@ -654,13 +774,13 @@ EOF
 
   # ---- workspace: mailbox + worktrees ----------------------------------------
   mkdir -p "$mailbox/tasks" "$mailbox/acks" "$mailbox/sessions" || die "cannot create mailbox at $mailbox"
-  ensure_exclude "$common" ".ai-team-worktrees/"
+  ensure_exclude "$common" ".teamflow-worktrees/"
 
   local role worktree wt_root branch
-  wt_root="$root/.ai-team-worktrees"
+  wt_root="$root/.teamflow-worktrees"
   while IFS="$TSV_SEP" read -r role label cli model effort worktree worker_type role_file; do
     [ "$worktree" = "yes" ] || continue
-    branch="ai-team/$role"
+    branch="teamflow/$role"
     if git -C "$wt_root/$role" rev-parse --git-dir >/dev/null 2>&1; then
       say "worktree exists: $wt_root/$role (reused, untouched)"
       continue
@@ -681,72 +801,10 @@ EOF
   local lib_dir="$root/.agents/lib"
   [ -d "$lib_dir" ] || lib_dir="$TOOL_HOME/.agents/lib"
 
-  pane_cmd() { # role cli model effort cwd rolefile sid mode type -> pane shell command
-    local prole="$1" pcli="$2" pmodel="$3" peffort="$4" pcwd="$5" pfile="$6" psid="$7" pmode="$8" ptype="$9"
-    local envs qfile qmailbox qlib sflag
-    qfile="$(shell_quote "$pfile")"
-    qmailbox="$(shell_quote "$mailbox")"
-    qlib="$(shell_quote "$lib_dir")"
-    # export (a shell builtin) rather than the env binary: the zai pane starts
-    # with `.` (source), which env cannot execute.
-    envs="export AGENT_ROLE=$(shell_quote "$prole") AGENT_WORKER_TYPE=$(shell_quote "$ptype") AGENT_ID=$(shell_quote "$sess-$prole") \
-AGENT_ROLE_FILE=$qfile AGENT_MAILBOX=$qmailbox AGENT_LIB_DIR=$qlib;"
-    local base="" bin
-    sflag="--session-id"
-    [ "$pmode" = resume ] && sflag="--resume"
-    # The Delegator is the user's interface: a fresh one acknowledges and
-    # reports READY by itself, whatever CLI runs it. claude and zai carry
-    # the role file in the system prompt, so their first message skips it
-    # (codex has no such flag and gets the file named in its prompt below).
-    # Workers get no message and idle until addressed. The notetaker
-    # checks the note queue after boot, including after a restart. A resumed
-    # conversation has had its handshake. The message is quoted as a whole:
-    # it reaches the CLI as one argument whatever the paths contain.
-    local hello=""
-    if [ "$prole" = delegator ] && [ "$pmode" != resume ]; then
-      hello=" $(shell_quote "You are the team Delegator. Your role file is loaded in the system prompt. \
-Read AGENTS.md in $(shell_quote "$pcwd"), run: bash $qlib/task.sh ack, and reply READY only.")"
-    fi
-    if [ "$prole" = notetaker ]; then
-      hello=" $(shell_quote "You are the team Notetaker. Read your role file and AGENTS.md, then run: bash $qlib/task.sh ack; bash $qlib/note-queue.sh resume. Reply READY only if no note task is waiting.")"
-    fi
-    case "$pcli" in
-      codex)
-        bin="$(shell_quote "$CODEX_BIN")"
-        # Reasoning effort has no --effort flag on codex. It rides as a -c
-        # config override. shell_quote keeps the configured value a single
-        # safe word. Empty effort means: let codex use its own default.
-        local qeff=""
-        [ -n "$peffort" ] && qeff="-c model_reasoning_effort=$(shell_quote "$peffort")"
-        # Full access mode (user request): no approval prompts, no sandbox.
-        if [ "$pmode" = resume ]; then
-          # explicit-id resume: flags belong to the resume subcommand
-          # (codex-cli 0.156.1 help); never --last/--continue (picker would
-          # be cwd-scoped across roles).
-          base="$bin resume $(shell_quote "$psid") --dangerously-bypass-approvals-and-sandbox -m $(shell_quote "$pmodel") $qeff -C $(shell_quote "$pcwd")"
-        else
-          base="$bin --dangerously-bypass-approvals-and-sandbox -m $(shell_quote "$pmodel") $qeff \
-$(shell_quote "You are the team $prole. Read $pfile and AGENTS.md in $pcwd. Run: bash $qlib/task.sh ack. $([ "$prole" = notetaker ] && printf 'Then run: bash %s/note-queue.sh resume.' "$qlib") Reply READY only if no task is waiting.")"
-        fi
-        ;;
-      claude)
-        bin="$(shell_quote "$CLAUDE_BIN")"
-        base="unset $CLAUDE_ROUTING_VARS; $bin $sflag $(shell_quote "$psid") --model $(shell_quote "$pmodel")"
-        [ -n "$peffort" ] && base="$base --effort $(shell_quote "$peffort")"
-        base="$base --append-system-prompt-file $qfile$hello"
-        ;;
-      zai)
-        bin="$(shell_quote "$CLAUDE_BIN")"
-        base="unset $CLAUDE_ROUTING_VARS; . $(shell_quote "$zai_env") && $bin $sflag $(shell_quote "$psid") --model $(shell_quote "$pmodel")"
-        [ -n "$peffort" ] && base="$base --effort $(shell_quote "$peffort")"
-        base="$base --append-system-prompt-file $qfile$hello"
-        ;;
-    esac
-    printf '%s %s' "$envs" "$base"
-  }
 
   # ---- build the tmux session -------------------------------------------------
   say "building session $sess (panes will show role labels; CLIs boot in place)"
+  local worker_command
   local -a order_roles order_clis order_cmds order_cwds
   local line idx=0
   while IFS="$TSV_SEP" read -r role label cli model effort worktree worker_type role_file; do
@@ -756,35 +814,8 @@ $(shell_quote "You are the team $prole. Read $pfile and AGENTS.md in $pcwd. Run:
     [ "$worktree" = "yes" ] && cwd="$wt_root/$role"
     order_cwds[$idx]="$cwd"
 
-    # Resume only this instance's recorded conversation. Panes may share a
-    # directory, so --continue and --last could select another worker.
-    local sid mode status snap=""
-    reg_follow_cli "$mailbox" "$role" "$cli"
-    sid="$(reg_get "$mailbox" "$role" SESSION_ID)"
-    case "$cli" in
-      claude|zai)
-        if claude_session_exists "$sid"; then mode=resume
-        else mode=fresh; sid="$(new_uuid)"; fi ;;
-      codex)
-        if codex_session_exists "$sid"; then mode=resume
-        else
-          mode=fresh; sid=""
-          snap="$(wc -l < "${CODEX_HOME:-$HOME/.codex}/session_index.jsonl" 2>/dev/null | tr -d ' ')"
-        fi ;;
-    esac
-    status=live
-    [ "$mode" = fresh ] && status=pending
-    local -a reg=(ROLE="$role" CLI="$cli" SESSION_ID="$sid" CWD="$cwd" MODEL="$model" \
-      STATUS="$status" UPDATED_AT="$(now_utc)")
-    [ "$mode" = fresh ] && reg+=(STARTED_AT="$(now_utc)" SNAPSHOT="$snap")
-    reg_write "$mailbox" "$role" "${reg[@]}"
-
-    local resolved_role_file="$root/.agents/roles/$role.md"
-    [ -n "$role_file" ] && resolved_role_file="$root/$role_file"
-    if [ -z "$role_file" ] && [ ! -f "$resolved_role_file" ]; then
-      resolved_role_file="$TOOL_HOME/.agents/roles/$role.md"
-    fi
-    order_cmds[$idx]="$(pane_cmd "$role" "$cli" "$model" "$effort" "$cwd" "$resolved_role_file" "$sid" "$mode" "$worker_type")"
+    prepare_worker
+    order_cmds[$idx]="$worker_command"
     idx=$((idx + 1))
   done <<EOF
 $tsv
@@ -801,6 +832,7 @@ EOF
     die "pane boot failed: '${order_roles[0]}' exited immediately (session rolled back)"
   team_write "$mailbox" "SESSION=$sess" "CREATED=$(session_created "$sess")" \
     "CONFIG=$conf" "CONFIG_HASH=$(conf_hash "$conf")" "ROOT=$root" "STARTED_AT=$(now_utc)" "MODE=$team_mode"
+  cp "$conf" "$mailbox/running.conf" || boot_fail "cannot save running config"
   # Clear routing values from this session. Each pane also unsets them
   # before starting a native Claude CLI, while z.ai panes source zai_env.
   local v
@@ -943,7 +975,7 @@ team_confout() {
 cmd_verify() { # $1 --config value ('' = the running team, else the default config)
   local root confout prefix sess
   root="$(team_root)" || exit $?
-  local mailbox; mailbox="$(git_common_dir "$root")/ai-team" || exit $?
+  local mailbox; mailbox="$(git_common_dir "$root")/$MAILBOX_NAME" || exit $?
   follow_team --verify "$root" "$mailbox" "$1"
   confout="$(team_confout "$root")" || exit $?
   prefix="$(printf '%s' "$confout" | head -1 | cut -d "$TSV_SEP" -f1)"
@@ -1034,7 +1066,7 @@ EOF
 cmd_kill() { # $1 --config value ('' = the running team, else the default config)
   local root confout prefix sess mailbox recorded
   root="$(team_root)" || exit $?
-  mailbox="$(git_common_dir "$root")/ai-team" || exit $?
+  mailbox="$(git_common_dir "$root")/$MAILBOX_NAME" || exit $?
   follow_team --kill "$root" "$mailbox" "$1"
   sess="$ACTIVE_SESSION"
   if [ -z "$sess" ]; then
@@ -1047,14 +1079,59 @@ cmd_kill() { # $1 --config value ('' = the running team, else the default config
   # drop the launch record unless its session is, against all odds, still there
   recorded="$(team_get "$mailbox" SESSION)"
   [ -n "$recorded" ] && [ -n "$(session_created "$recorded")" ] || rm -f "$mailbox/active"
-  say "worktrees and branches are left in place (inspect .ai-team-worktrees/)"
+  say "worktrees and branches are left in place (inspect .teamflow-worktrees/)"
+}
+
+# Launch one worker in an existing team. The Python manager publishes the registry.
+cmd_launch_worker() { # config root session worker target split-direction
+  local conf="$1" root="$2" sess="$3" wanted="$4" target="$5" direction="$6"
+  local mailbox lib_dir wt_root zai_env CODEX_BIN CLAUDE_BIN
+  mailbox="$(git_common_dir "$root")/$MAILBOX_NAME"
+  lib_dir="$root/.agents/lib"
+  wt_root="$root/.teamflow-worktrees"
+  CODEX_BIN="$(command -v codex)"
+  CLAUDE_BIN="$(command -v claude)"
+  local confout role label cli model effort worktree worker_type role_file cwd worker_command
+  confout="$(conf_read "$conf")" || return 1
+  zai_env="$(printf '%s' "$confout" | head -1 | cut -d "$TSV_SEP" -f2)"
+  zai_env="${zai_env/#\~/$HOME}"
+  while IFS="$TSV_SEP" read -r role label cli model effort worktree worker_type role_file; do
+    [ "$role" = "$wanted" ] || continue
+    cwd="$root"
+    if [ "$worktree" = yes ]; then
+      cwd="$wt_root/$role"
+      if ! git -C "$cwd" rev-parse --git-dir >/dev/null 2>&1; then
+        if git -C "$root" show-ref --verify --quiet "refs/heads/teamflow/$role"; then
+          git -C "$root" worktree add "$cwd" "teamflow/$role" >&2 || return 1
+        else
+          git -C "$root" worktree add -b "teamflow/$role" "$cwd" >&2 || return 1
+        fi
+      fi
+    fi
+    prepare_worker
+    local pid
+    [ "$role" != notetaker ] || rm -f "$mailbox/acks/notetaker.json"
+    if [ "$direction" = window ]; then
+      pid="$(tmux new-window -d -P -F '#{pane_id}' -t "=$sess" -n "$target" -c "$cwd" "$worker_command")" || return 1
+    else
+      pid="$(tmux split-window -d -P -F '#{pane_id}' "$direction" -t "$target" -c "$cwd" "$worker_command")" || return 1
+    fi
+    tmux set-window-option -t "$pid" remain-on-exit on >/dev/null
+    tmux set-window-option -t "$pid" pane-border-status top >/dev/null
+    tmux select-pane -t "$pid" -T "$label"
+    printf '%s\n' "$pid"
+    return 0
+  done < <(printf '%s\n' "$confout" | tail -n +2)
+  return 1
 }
 
 cmd_workers() { # $1 config argument $2 action $3 value
   local root conf
   root="$(team_root)" || exit $?
-  conf="$(resolve_conf "$root" "$1")" || exit $?
-  [ -n "$2" ] || die "usage: teamflow workers list|add <type>|remove <id>"
+  prepare_project "$root"
+  follow_team workers "$root" "$(git_common_dir "$root")/$MAILBOX_NAME" "$1"
+  conf="$T_CONF"
+  [ -n "$2" ] || die "usage: teamflow workers list|add <type>|remove <id>|sync"
   local -a args=("$2" "$conf" "$root")
   [ -z "$3" ] || args+=("$3")
   python3 "$TOOL_HOME/scripts/teamflow_workers.py" "${args[@]}"
@@ -1064,6 +1141,14 @@ cmd_workers() { # $1 config argument $2 action $3 value
 
 # Mode and flags may come in any order. Everything is parsed and checked
 # before any mode runs, so a mistyped command line has no side effects.
+if [ "${1:-}" = --internal-launch-worker ]; then
+  shift
+  cmd_launch_worker "$@"
+  exit $?
+fi
+delegate_to_tool_home "$@"
+unset TEAMFLOW_FROM_PROJECT # keep it out of the panes this run starts
+
 MODE="" NO_ATTACH=0 CONFIG="" CONFIG_GIVEN=0 WORKERS=0 WORKER_ACTION="" WORKER_VALUE=""
 
 pick_mode() {
@@ -1074,7 +1159,7 @@ pick_mode() {
 while [ $# -gt 0 ]; do
   case "$1" in
     init|start|up|--verify|--check-models|--kill|workers) pick_mode "$1" ;;
-    list|add|remove)
+    list|add|remove|sync)
       [ "$MODE" = workers ] && [ -z "$WORKER_ACTION" ] || die "unknown argument: $1"
       WORKER_ACTION="$1" ;;
     --no-attach) NO_ATTACH=1 ;;

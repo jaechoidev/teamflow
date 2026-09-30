@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# task.sh — shared task mailbox for the ai-team workspace.
+# task.sh — shared task mailbox for the teamflow workspace.
 #
 # Lives at .agents/lib/task.sh inside the project (copied by `teamflow init`).
-# State lives under the git COMMON dir (<repo>/.git/ai-team/) so every
+# State lives under the git COMMON dir (<repo>/.git/teamflow/) so every
 # worktree sees it immediately, without commits and without git-status noise.
 #
 # Commands:
@@ -93,7 +93,7 @@ case "$cmd" in
     id="${1:?usage: take <id>}"
     [ -d "$TASKS/$id" ] || fail "no such task: $id"
     role="${AGENT_ROLE:-}"
-    [ -n "$role" ] || fail "take requires AGENT_ROLE (run from an ai-team pane)"
+    [ -n "$role" ] || fail "take requires AGENT_ROLE (run from a teamflow pane)"
     to=$(sed -n 's/^to:      //p' "$TASKS/$id/task.md" | head -1)
     [ "$to" = "$role" ] || fail "$id is addressed to ${to:-unknown}, not $role"
     [ "$(cat "$TASKS/$id/status" 2>/dev/null)" = "done" ] && fail "$id already done"
@@ -109,7 +109,7 @@ case "$cmd" in
     id="${1:?usage: done <id>}"
     [ -d "$TASKS/$id" ] || fail "no such task: $id"
     role="${AGENT_ROLE:-}"
-    [ -n "$role" ] || fail "done requires AGENT_ROLE (run from an ai-team pane)"
+    [ -n "$role" ] || fail "done requires AGENT_ROLE (run from a teamflow pane)"
     to=$(sed -n 's/^to:      //p' "$TASKS/$id/task.md" | head -1)
     [ "$to" = "$role" ] || fail "$id is addressed to ${to:-unknown}, not $role"
     [ "$(cat "$TASKS/$id/status" 2>/dev/null)" = "done" ] && fail "$id is already done — results are immutable"

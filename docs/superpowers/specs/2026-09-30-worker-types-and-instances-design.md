@@ -66,10 +66,10 @@ The launcher resolves each worker into its type settings and instance ID before 
 Add `teamflow workers list|add|remove` with the existing `--config <file>` behavior. The `teamflow-workers` skill calls these commands and explains their results. It does not edit INI text directly.
 
 - `list` shows the ordered instance IDs, types, CLI and model, worktree policy, and whether each configured instance has a live pane. It also marks a running configuration that differs from the saved file.
-- `add <type>` creates the next unused numbered ID for that type and appends its worker section before the Notetaker. `add notetaker` creates the reserved singleton ID only when absent. It checks that the type exists and reports the new ID. It does not create a pane or worktree until the next team start.
-- `remove <id>` removes only that worker section. It refuses when the ID has an assigned or in-progress task or when removal would leave no regular worker. Removing the Notetaker also requires an empty note queue. It preserves task records, conversation history, worktrees, and branches. It reports that a running pane remains until restart.
+- `add <type>` creates the next unused numbered ID for that type and appends its worker section before the Notetaker. `add notetaker` creates the reserved singleton ID only when absent. It checks that the type exists and reports the new ID. When a team is running, it creates the worktree if needed and launches the pane immediately. Otherwise the next team start creates them.
+- `remove <id>` removes only that worker section. It refuses when the ID has an assigned or in-progress task or when removal would leave no regular worker. Removing the Notetaker also requires an empty note queue. It preserves task records, conversation history, worktrees, and branches. It closes the running pane immediately and retiles the remaining panes.
 
-Commands validate the complete proposed configuration and write it atomically. A failed command leaves the file unchanged. Edits to a running team's configuration take effect after `teamflow --kill` and `teamflow start`. Management commands never stop or restart a team automatically. This follows the existing config hash check.
+Commands validate the complete proposed configuration and write it atomically. Add launches a pane in the active session, and remove closes its pane. Unaffected workers keep running. Launch failures restore the config and close newly created panes. If a later runtime operation fails after removal has begun, retain the desired config and report that `workers sync` is needed to finish. Direct roster edits can be applied with `workers sync`. When no team is running, changes apply at the next start.
 
 ## Project setup
 
@@ -81,4 +81,4 @@ The Delegator selects a specific instance ID, then uses it consistently in `task
 
 ## Verification
 
-Test config resolution with multiple instances of one type, singleton and order constraints, and invalid types and IDs. Test add, list, and remove with an active config, a missing type, occupied task, and last-worker guard. Run a launcher smoke test with two instances of one type and verify distinct panes, mailbox destinations, and worktrees. Check that a changed config requires restart and that the Notetaker still processes one released task at a time.
+Test config resolution with multiple instances of one type, singleton and order constraints, and invalid types and IDs. Test add, list, and remove with an active config, a missing type, occupied task, and last-worker guard. Run a launcher smoke test with two instances of one type and verify distinct panes, mailbox destinations, and worktrees. Check that live roster changes preserve unaffected panes and that the Notetaker still processes one released task at a time.

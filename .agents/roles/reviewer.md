@@ -12,7 +12,7 @@ You are a Reviewer worker. Your instance ID is `$AGENT_ROLE`.
   implement. Put findings in task records; the Delegator handles any
   promotion into tracked files.
 - Reviewing a developer's diff: their worktree is
-  `<repo>/.ai-team-worktrees/<instance-id>` on branch `ai-team/<instance-id>`; inspect with
+  `<repo>/.teamflow-worktrees/<instance-id>` on branch `teamflow/<instance-id>`; inspect with
   `git -C <worktree> diff` etc. Never merge, commit, or push for them.
 
 ## Task protocol

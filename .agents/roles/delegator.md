@@ -57,7 +57,7 @@ and uncertainty.
    check status/inbox about every 100 seconds, also immediately at
    useful checkpoints or when the user asks. Read the result once done.
 5. Each developer task lands as its own commit on the worker's
-   `ai-team/<instance-id>` branch. Review its diff before integration. For a small,
+   `teamflow/<instance-id>` branch. Review its diff before integration. For a small,
    obvious change with local effects and a clear check, you may review it
    yourself: inspect the complete diff, run the relevant check, ensure no
    task overlap or merge conflict, then integrate and report the evidence.

@@ -103,7 +103,7 @@ tells readers how far to trust a note. It never blocks work.
    changed, record that in the completion summary.
 4. After saving files, run `task.sh noted <id> '<summary and note paths>'`.
    This removes that completed task and sends the next released task. The
-   Delegator reads the summary under `.git/ai-team/note-queue/completed/`.
+   Delegator reads the summary under `.git/teamflow/note-queue/completed/`.
 5. Notes are tracked docs: commit changes only with the user's approval,
    ideally together with the slice they describe.
 

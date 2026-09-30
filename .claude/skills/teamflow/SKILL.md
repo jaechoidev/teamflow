@@ -11,7 +11,9 @@ mailbox. Workers never type into your session.
 
 ## 1. Check the repo
 
-Work from the target project folder. It has adopted teamflow when both
+Work from the target project folder. A linked worktree of the project also
+works: the launcher and the mailbox act on the main checkout's team. The
+project has adopted teamflow when both
 `scripts/teamflow` and `.agents/lib/delegator.sh` exist. If they do not, ask
 the user for the teamflow tool home, then run
 `bash <tool-home>/scripts/teamflow start`. This initializes Git and the
@@ -25,8 +27,9 @@ Then check that the launcher knows workers mode:
 
 If this fails, the project launcher is older and lacks `start`. Use
 `bash <tool-home>/scripts/teamflow start` from the project folder instead.
-Tell the user that the project's launcher copy needs updating before future
-`./scripts/teamflow start` calls.
+That run refreshes the project's unmodified teamflow files, and later
+`./scripts/teamflow` calls hand off to the tool home. Report any `.new` files
+it stages for locally edited copies.
 
 Read `.agents/roles/delegator.md` and `AGENTS.md` and follow them.
 Run `./scripts/teamflow workers list` to see configured instance IDs.
@@ -87,7 +90,7 @@ bash .agents/lib/delegator.sh task status T-0001
 bash .agents/lib/delegator.sh task read T-0001
 bash .agents/lib/delegator.sh pane tail developer-l-1
 bash .agents/lib/delegator.sh task release T-0001 abc1234
-cat .git/ai-team/note-queue/completed/T-0001.md
+cat .git/teamflow/note-queue/completed/T-0001.md
 ```
 
 `task new` prints the task id to use in the `send-to` line. Route to a
