@@ -7,7 +7,7 @@ This repo is the home of the `teamflow` tool: a portable tmux workspace launcher
 
 ## AI team workspace
 
-In workers mode, the Delegator runs in the user's own agent session outside
+The Delegator runs in the user's own agent session outside
 tmux. Each worker runs in its own tmux window, named by its instance ID.
 Workers join on demand, or the configured default team starts together.
 

@@ -42,10 +42,8 @@
 #   --only <worker>  start or up: launch a team with just this worker, given as
 #                    an instance ID or a type. The config stays the default team.
 #   --last           start or up: bring back the last session's workers
-#   --workers        up only: start tiled worker panes without a
-#                    Delegator pane. The Delegator runs in your own terminal
-#                    and reaches the mailbox through .agents/lib/delegator.sh.
-#                    [pane.delegator] is ignored and may be absent.
+#   --workers        accepted for compatibility. Every team is workers only:
+#                    the Delegator runs in your own agent session.
 #   -h|--help        show this help
 #
 # Design notes:
@@ -513,6 +511,11 @@ hint_conf() { # $1 conf $2 team root $3 default conf -> ' --config <path>' ('' f
 # mode (full or workers): explain, change nothing.
 refuse_other_config() {
   local mode="$1" req="$2" root="$3" dconf="$4" rmode="${5:-}" running what="config"
+  if [ "$ACTIVE_MODE" = full ]; then
+    say "session $ACTIVE_SESSION is a full team with a Delegator pane, started by an older teamflow. Nothing was changed."
+    say "Every team is workers only now. Stop it with: scripts/teamflow --kill"
+    exit 1
+  fi
   running="${ACTIVE_CONFIG:-unknown}$(mode_tag "$ACTIVE_MODE")"
   [ "$ACTIVE_RECORDED" = 1 ] || running="$running (no launch record: assumed)"
   [ "$ACTIVE_CONFIG" = "$req" ] && what="mode"
@@ -582,6 +585,7 @@ cmd_init() {
 $installed
 EOF
 
+  python3 "$TOOL_HOME/scripts/teamflow_scaffold.py" drop-pane-delegator "$root/teamflow.conf" || exit 1
   if [ ! -e "$root/teamflow.conf" ]; then
     cp "$TOOL_HOME/teamflow.conf" "$root/teamflow.conf"
     say "wrote teamflow.conf (user-owned: edit worker types and instances here; init never overwrites it)"
@@ -654,19 +658,11 @@ AGENT_ROLE_FILE=$qfile AGENT_MAILBOX=$qmailbox AGENT_LIB_DIR=$qlib;"
   local base="" bin
   sflag="--session-id"
   [ "$pmode" = resume ] && sflag="--resume"
-  # The Delegator is the user's interface: a fresh one acknowledges and
-  # reports READY by itself, whatever CLI runs it. claude and zai carry
-  # the role file in the system prompt, so their first message skips it
-  # (codex has no such flag and gets the file named in its prompt below).
-  # Workers get no message and idle until addressed. The notetaker
-  # checks the note queue after boot, including after a restart. A resumed
-  # conversation has had its handshake. The message is quoted as a whole:
-  # it reaches the CLI as one argument whatever the paths contain.
+  # Workers get no message and idle until addressed. The notetaker checks
+  # the note queue after boot, including after a restart. The message is
+  # quoted as a whole: it reaches the CLI as one argument whatever the
+  # paths contain.
   local hello=""
-  if [ "$prole" = delegator ] && [ "$pmode" != resume ]; then
-    hello=" $(shell_quote "You are the team Delegator. Your role file is loaded in the system prompt. \
-Read AGENTS.md in $(shell_quote "$pcwd"), run: bash $qlib/task.sh ack, and reply READY only.")"
-  fi
   if [ "$prole" = notetaker ]; then
     hello=" $(shell_quote "You are the team Notetaker. Read your role file and AGENTS.md, then run: bash $qlib/task.sh ack; bash $qlib/note-queue.sh resume. Reply READY only if no note task is waiting.")"
   fi
@@ -745,8 +741,8 @@ prepare_worker() {
 # ---------- up -----------------------------------------------------------------
 
 cmd_up() { # $1 attach (1|0)  $2 --config value ('' = default config)  $3 workers only (1|0)  $4 --only value  $5 --last (1|0)
-  local mode_attach="$1" conf_arg="$2" team_mode=full only="${4:-}" last="${5:-0}"
-  [ "${3:-0}" = 1 ] && team_mode=workers
+  # $3 (workers only) is kept for callers: every team is workers only.
+  local mode_attach="$1" conf_arg="$2" team_mode=workers only="${4:-}" last="${5:-0}"
 
   command -v tmux >/dev/null 2>&1 || die "tmux not found (brew install tmux / apt install tmux)"
   command -v python3 >/dev/null 2>&1 || die "python3 not found"
@@ -794,10 +790,8 @@ cmd_up() { # $1 attach (1|0)  $2 --config value ('' = default config)  $3 worker
       [ -z "$absent" ] || say "this session runs without these default workers: $absent. Add one with: teamflow workers add <id>"
     fi
     sess="$ACTIVE_SESSION"
-    if [ "$team_mode" = workers ]; then
-      note_delegator "$root"
-      start_watcher "$mailbox" "$root" "$sess"
-    fi
+    note_delegator "$root"
+    start_watcher "$mailbox" "$root" "$sess"
     say "session $sess already running — reattaching (no duplicate launched)"
     [ "$mode_attach" = 1 ] && exec tmux attach-session -t "=$sess"
     echo "$sess"
@@ -822,14 +816,6 @@ cmd_up() { # $1 attach (1|0)  $2 --config value ('' = default config)  $3 worker
   # ---- preflight: config + CLIs (fail before creating anything) -------------
   local tsv roles="" missing="" note_tsv="" worker_count
   tsv="$(printf '%s' "$confout" | tail -n +2)"
-  if [ "$team_mode" = workers ]; then
-    # The Delegator runs outside tmux: its section is neither checked nor
-    # started, and its registry entry is never touched.
-    tsv="$(printf '%s\n' "$tsv" | awk -F "$TSV_SEP" '$1 != "delegator"')"
-  else
-    [ "$(printf '%s\n' "$tsv" | head -1 | cut -d "$TSV_SEP" -f1)" = delegator ] \
-      || die "full-team mode requires [pane.delegator] first in $conf"
-  fi
   note_tsv="$(printf '%s\n' "$tsv" | awk -F "$TSV_SEP" '$1 == "notetaker"')"
   if [ -n "$note_tsv" ]; then
     [ "$(printf '%s\n' "$tsv" | tail -1 | cut -d "$TSV_SEP" -f1)" = notetaker ] \
@@ -837,7 +823,7 @@ cmd_up() { # $1 attach (1|0)  $2 --config value ('' = default config)  $3 worker
     [ -f "$root/.agents/lib/note-queue.sh" ] \
       || die "notetaker queue missing; run teamflow init to install .agents/lib/note-queue.sh"
   fi
-  worker_count="$(printf '%s\n' "$tsv" | awk -F "$TSV_SEP" '$1 != "delegator"' | grep -c .)"
+  worker_count="$(printf '%s\n' "$tsv" | grep -c .)"
   [ "$worker_count" -gt 0 ] \
     || die "$conf has no default team. Add workers on demand with teamflow add <type> (see teamflow types)"
 
@@ -1014,22 +1000,14 @@ EOF
     AGENT_MAILBOX="$mailbox" bash "$root/.agents/lib/note-queue.sh" poke
   fi
 
-  if [ "$team_mode" = workers ]; then
-    note_delegator "$root"
-    start_watcher "$mailbox" "$root" "$sess"
-  fi
+  note_delegator "$root"
+  start_watcher "$mailbox" "$root" "$sess"
 
   say "workspace up: $sess"
   show_stop_note "$mailbox"
   rm -f "$mailbox/stopped"
   say "config: $conf"
-  if [ "$team_mode" = workers ]; then
-    say "workers only: one window per worker, no Delegator window. Workers idle until addressed. The Delegator runs in your own agent session and reaches the mailbox with: bash .agents/lib/delegator.sh task|pane ..."
-  else
-    say "${order_roles[0]} = pane $p0 (${order_clis[0]}). Workers idle until addressed. Role files are pre-loaded via system prompt (claude/zai) or the startup prompt (codex)."
-    [ "${order_clis[0]}" = codex ] \
-      && say "voice: the Codex CLI has no voice mode; use Codex.app separately if you need voice."
-  fi
+  say "one window per worker. Workers idle until addressed. The Delegator runs in your own agent session and reaches the mailbox with: bash .agents/lib/delegator.sh task|pane ..."
   if [ "$mode_attach" = 1 ]; then
     exec tmux attach-session -t "=$sess"
   fi
@@ -1064,8 +1042,7 @@ cmd_verify() { # $1 --config value ('' = the running team, else the default conf
   echo "session: $sess ($(tmux has-session -t "=$sess" 2>/dev/null && echo up || echo DOWN))"
   echo "config:  ${T_CONF:-none}"
   show_stop_note "$mailbox"
-  if [ "$ACTIVE_MODE" = workers ]; then
-    echo "mode:    workers only (the Delegator runs outside tmux)"
+  if [ -n "$ACTIVE_SESSION" ]; then
     note_delegator "$root"
     local dpid dname dkind dstate wpid
     dpid="$(grep '^PID=' "$mailbox/delegator" 2>/dev/null | cut -d= -f2)"
@@ -1079,13 +1056,12 @@ cmd_verify() { # $1 --config value ('' = the running team, else the default conf
     else
       echo "delegator: ${dname:-unknown} (pid ${dpid:-none}, $dstate)"
     fi
-    echo "watcher:   $([ -n "$wpid" ] && kill -0 "$wpid" 2>/dev/null && echo "running (pid $wpid)" || echo "not running"). checks each minute. A minute after the Delegator leaves, idle workers stop, busy ones when done, all within 2 hours (log: .git/teamflow/watch.log)"
+    echo "watcher:   $([ -n "$wpid" ] && kill -0 "$wpid" 2>/dev/null && echo "running (pid $wpid)" || echo "not running"). Checks each minute. A minute after the Delegator leaves, idle workers stop, busy ones when done, all within 2 hours (log: .git/teamflow/watch.log)"
   fi
   while IFS="$TSV_SEP" read -r role label cli model effort worktree worker_type role_file; do
     local pid ack="no" alive="gone" ack_time="" bid=""
     pid=$(awk -F '\t' -v r="$role" '$1 == r {print $2; exit}' "$mailbox/panes.tsv" 2>/dev/null)
     [ -n "$pid" ] && tmux list-panes -a -F '#{pane_id}' 2>/dev/null | grep -qx "$pid" && alive="pane $pid"
-    [ "$role" = delegator ] && [ "$ACTIVE_MODE" = workers ] && alive="external"
     # backfill a codex id that boot-time discovery missed (partial boot);
     # same cwd binding as boot-time discovery, never a foreign session.
     # Not for an external Delegator: the user's own Codex session may run in

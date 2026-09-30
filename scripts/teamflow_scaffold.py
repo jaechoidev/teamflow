@@ -272,6 +272,20 @@ def migrate(root, common):
             exclude.write_text("".join(kept))
 
 
+def drop_pane_delegator(config):
+    """Remove the [pane.delegator] section of the removed full-team mode."""
+    path = Path(config)
+    if not path.is_file():
+        return
+    lines = path.read_text().splitlines(keepends=True)
+    start = next((i for i, line in enumerate(lines) if line.strip() == "[pane.delegator]"), None)
+    if start is None:
+        return
+    end = next((i for i in range(start + 1, len(lines)) if lines[i].lstrip().startswith("[")), len(lines))
+    path.write_text("".join(lines[:start] + lines[end:]))
+    say(f"removed [pane.delegator] from {path.name}: the Delegator always runs in your own agent session")
+
+
 def say(message):
     print(f"teamflow: {message}", file=sys.stderr)
 
@@ -283,6 +297,8 @@ def main(argv):
         return 0 if pristine(Path(argv[1]).resolve(), Path(argv[2]).resolve(), argv[3]) else 1
     elif len(argv) == 3 and argv[0] == "migrate":
         migrate(Path(argv[1]), Path(argv[2]))
+    elif len(argv) == 2 and argv[0] == "drop-pane-delegator":
+        drop_pane_delegator(argv[1])
     else:
         raise ScaffoldError("usage: teamflow_scaffold.py install <tool-home> <root> | "
                             "pristine <tool-home> <root> <path> | migrate <root> <git-common-dir>")

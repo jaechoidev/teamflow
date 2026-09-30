@@ -207,53 +207,36 @@ Switching is always stop, then start:
 
 ```
 ./scripts/teamflow --kill
-./scripts/teamflow up --config teamflow.claude.conf
+./scripts/teamflow start --config teamflow.zai.conf
 ```
 
-### Example: a Claude Delegator
+### Example: a z.ai-only variant
 
 ```
-cp teamflow.conf teamflow.claude.conf
+cp teamflow.conf teamflow.zai.conf
 ```
 
-Edit the Delegator section of the copy and leave the rest alone:
+Edit the types in the copy, for example `cli = zai` and `model = glm-5.3`
+for every developer type, then check the models and switch:
 
 ```
-[pane.delegator]
-label = Delegator (claude fable)
-cli = claude
-model = fable
-effort = medium
-worktree = no
-```
-
-Then check the models, stop the running team, and start the variant:
-
-```
-./scripts/teamflow --check-models --config teamflow.claude.conf
+./scripts/teamflow --check-models --config teamflow.zai.conf
 ./scripts/teamflow --kill
-./scripts/teamflow up --config teamflow.claude.conf
+./scripts/teamflow start --config teamflow.zai.conf
 ./scripts/teamflow --verify        # reports the running team and its config
 ```
 
-A fresh Claude or z.ai Delegator gets the same handshake as the Codex
-one: a first message that tells it to read AGENTS.md, write its
-acknowledgement, and reply READY. Its role file arrives through the
-system prompt, as for every Claude pane. Workers still get no startup
-message.
+Conversations follow the CLI. An instance whose CLI differs in the other
+config starts a new conversation there and never resumes the other CLI's
+id. Its old conversation is parked, and switching back resumes it.
+Instances with the same ID and CLI in both configs keep their
+conversations across the switch.
 
-Conversations follow the CLI. The Claude Delegator starts its own
-conversation and never resumes the Codex id. The Codex entry is parked
-as `.git/teamflow/sessions/delegator.codex`, and the next launch with
-`teamflow.conf` resumes it. Instances with the same ID and CLI in both
-configs keep their conversations across the switch. Each variant may choose
-its own roster and type settings.
+## The Delegator
 
-## Workers mode (external Delegator)
-
-Run the Delegator yourself in any terminal, with Codex, Claude, or Claude
-routed to z.ai. Workers join on demand with `teamflow add <type>`, or the
-default team starts together:
+The Delegator is your own agent session, in any terminal: Codex, Claude
+Code, or Claude routed to z.ai. It never runs inside tmux. Workers join on
+demand with `teamflow add <type>`, or the default team starts together:
 
 ```
 ./scripts/teamflow start                    # the default team; prints the session name
@@ -261,12 +244,11 @@ tmux attach -t <session>                     # watch the workers (optional)
 ```
 
 Each worker runs in its own window, named by its instance ID, with its
-model, worktree, and conversation resume. `[pane.delegator]` is
-ignored and may be left out. No Delegator pane or CLI starts, and nothing
-is typed into your session: results arrive in the mailbox. `--config`,
-`--verify`, and `--kill` work as for the full team. One team runs per
-repo and the mode counts, so `up` and `up --workers` refuse each other
-until `--kill`.
+model, worktree, and conversation resume. Nothing is typed into your
+session: results arrive in the mailbox. Earlier versions could also run a
+Delegator pane inside tmux. That full-team mode is gone: `teamflow init`
+removes a leftover `[pane.delegator]` section from the config, and a full
+team still running from an older version is refused until `--kill`.
 
 Your session has no `AGENT_*` variables. `.agents/lib/delegator.sh` sets
 them from the repo it belongs to, then runs `task.sh` or `pane.sh`:
@@ -301,19 +283,17 @@ upgrades).
 
 ## Daily use
 
-- **Launch/reattach full team**: `./scripts/teamflow up` (from anywhere inside the repo)
-- **Another config**: `./scripts/teamflow up --config <file>`, one team at
+- **Start the default team**: `./scripts/teamflow start` (detached), or
+  `./scripts/teamflow up` to attach (from anywhere inside the repo)
+- **Another config**: `./scripts/teamflow start --config <file>`, one team at
   a time (see Choosing a config)
-- **Workers only**: `./scripts/teamflow start`, with the Delegator in
-  your own terminal (see Workers mode)
-- **Talk**: in workers mode, plan with the Delegator in your terminal. It
-  turns the plan into tasks, adds the workers it needs, dispatches the
-  tasks, and reports real results. In full-team mode, use the `delegator`
-  window.
+- **Talk**: plan with the Delegator in your own agent session. It turns the
+  plan into tasks, adds the workers it needs, dispatches the tasks, and
+  reports real results.
 - **Dispatch protocol**: tasks go through the mailbox — the Delegator does
   this for you via `task.sh new` + `pane.sh send-to`. Workers `take` →
   `done` (result in the task record). Nothing is ever typed into the
-  Delegator pane (`send-to delegator` is rejected); it discovers
+  Delegator session (`send-to delegator` is rejected); it discovers
   completions via `task.sh inbox delegator`.
 - **Check results yourself**: `bash .agents/lib/task.sh list`,
   `... read T-0003`, `... inbox <instance-id>`
@@ -492,7 +472,7 @@ still wins):
   `$CLAUDE_CONFIG_DIR` (default `~/.claude`)/`projects/`; when it is gone
   (expired or deleted) the role starts a new conversation under a fresh id.
   The old transcript is never touched.
-- **Delegator (Codex)** mints its own id at first boot; the launcher
+- **Codex workers** mint their own id at first boot; the launcher
   discovers it from `~/.codex/session_index.jsonl` (newest entry whose
   rollout records this workspace's cwd) and later resumes it with
   `codex resume <id>`, re-pinning model, working directory, and full-access
@@ -509,18 +489,14 @@ still wins):
   the one parked for the configured CLI. Switching back resumes where
   that CLI left off.
 
-## Voice, models, and other honest limitations
+## Models and other honest limitations
 
-- **Voice**: the Codex CLI has no voice mode (verified on codex-cli 0.156.1).
-  The Delegator is keyboard-driven; Codex.app (desktop) has voice if you
-  need it — separate from this workspace.
 - **Model availability**: `--check-models` probes each configured model with
   one tiny request (costs a little quota) and reports OK/UNAVAILABLE per
   pane. Codex has no cheap probe; its model is verified at first use.
 - **First run in a new folder**: Codex shows a one-time "Trust this folder?"
   prompt — accept it once (per folder).
-- **Startup cost**: the Delegator gets a role handshake. The Notetaker gets
-  a queue recovery handshake. The other worker panes load their role via
+- **Startup cost**: the Notetaker gets a queue recovery handshake. The other worker panes load their role via
   `--append-system-prompt-file` (Claude/z.ai) and act when first addressed.
   The note queue uses no model calls while idle or while a note is in progress.
 - **Busy CLIs**: `send-to` types into a pane; if that CLI is mid-turn the
@@ -540,7 +516,6 @@ still wins):
   the next launch. The one-team check sees the tmux server the launcher
   talks to, so a team on another tmux socket is not detected. A session
   without a launch record (started by an older copy of the launcher) is
-  attributed to the default config. Codex support is built for the
-  Delegator pane: its startup prompt is worded for the Delegator, and id
-  discovery goes by working directory. A variant that runs Codex in a
-  worker role, or in two panes that share a directory, is untested.
+  attributed to the default config. Codex workers are lightly tested: id
+  discovery goes by working directory, so two Codex workers that share a
+  directory could race it.

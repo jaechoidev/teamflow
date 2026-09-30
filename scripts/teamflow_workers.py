@@ -47,8 +47,10 @@ def valid_field(value, label):
 
 def resolve(cp):
     workspace = cp["workspace"] if cp.has_section("workspace") else {}
-    prefix = valid_field(workspace.get("session_prefix", "at"), "session prefix")
+    prefix = valid_field(workspace.get("session_prefix", "tf"), "session prefix")
     zai_env = valid_field(workspace.get("zai_env", "~/.zai/env.sh"), "zai env")
+    # [pane.delegator] configured the removed full-team mode. It is ignored,
+    # and teamflow init removes it.
     for section in sections(cp, "pane."):
         if section != "pane.delegator":
             raise ConfigError(f"unsupported pane section: {section}")
@@ -59,8 +61,6 @@ def resolve(cp):
             raise ConfigError(f"invalid worker type: {name}")
         types[name] = cp[section]
     rows = []
-    if cp.has_section("pane.delegator"):
-        rows.append(pane_row("delegator", cp["pane.delegator"]))
     workers = sections(cp, "worker.")
     for index, section in enumerate(workers):
         worker_id = section[7:]
