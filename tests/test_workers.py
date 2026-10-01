@@ -20,7 +20,7 @@ class WorkersTest(unittest.TestCase):
         (self.root / "scripts").mkdir()
         for name in ("teamflow", "teamflow_workers.py", "teamflow_scaffold.py", "teamflow_setup.py"):
             shutil.copy2(SOURCE / "scripts" / name, self.root / "scripts" / name)
-        shutil.copy2(SOURCE / "teamflow.conf", self.root / "teamflow.conf")
+        shutil.copy2(SOURCE / ".agents" / "teamflow.conf", self.root / "teamflow.conf")
         roles = self.root / ".agents" / "roles"
         roles.mkdir(parents=True)
         for source in (SOURCE / ".agents" / "roles").glob("*.md"):
