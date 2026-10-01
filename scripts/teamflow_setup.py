@@ -380,9 +380,15 @@ def probe_model(name, entry_launch, model):
         argv = [entry_launch.split(":", 1)[1], "--model", model, "--print", "reply ok"]
     try:
         run = subprocess.run(argv, capture_output=True, text=True, timeout=180, stdin=subprocess.DEVNULL)
-    except (OSError, subprocess.TimeoutExpired):
-        return False
-    return run.returncode == 0 and "ok" in run.stdout.lower()
+    except subprocess.TimeoutExpired:
+        return False, "no answer within 180 seconds"
+    except OSError as exc:
+        return False, str(exc)
+    if run.returncode == 0 and "ok" in run.stdout.lower():
+        return True, ""
+    lines = [l.strip() for l in (run.stdout + run.stderr).splitlines() if l.strip()]
+    reason = next((l for l in lines if "error" in l.lower()), lines[-1] if lines else f"exit {run.returncode}")
+    return False, reason[:160]
 
 
 def setup(args):
@@ -480,8 +486,17 @@ def setup(args):
             e = found[command]
             launch = f"script:{e['script']}" if e.get("run") == "script" else \
                 f"interactive:{command}" if e.get("run") == "interactive" else f"exec:{e['path']}"
-            ok = probe_model(command, launch, model)
-            print(f"  {kind:12} {command:14} {model:12} {'OK' if ok else 'UNAVAILABLE'}")
+            while True:
+                ok, reason = probe_model(command, launch, model)
+                print(f"  {kind:12} {command:14} {model:12} {'OK' if ok else 'UNAVAILABLE: ' + reason}")
+                if ok or not interactive:
+                    break
+                retry = ask(f"  {'':12} another model for {kind}? (Enter keeps {model})")
+                if not retry or retry == model:
+                    break
+                model = retry
+                text = set_option(text, f"type.{kind}", "model", model)
+                chosen[kind] = (command, model)
 
     registry = read_registry()
     registry.update(found)
