@@ -26,6 +26,7 @@ offer-zai <config>
 import configparser
 import functools
 import hashlib
+import json
 import os
 from pathlib import Path
 import re
@@ -35,6 +36,9 @@ import subprocess
 import sys
 
 SUPPORTED = {"claude": "claude", "codex": "codex"}
+# Model aliases `claude --model` accepts (Claude Code model-config docs).
+# Special values such as default, best, and opusplan are left out.
+CLAUDE_ALIASES = ("fable", "opus", "sonnet", "haiku", "opus[1m]", "sonnet[1m]")
 OTHER_AGENTS = ("opencode", "cursor-agent", "aider", "gemini", "qwen", "amp", "goose", "crush", "kimi")
 MARK = "@@teamflow-probe@@"
 TOOL_HOME = Path(__file__).resolve().parents[1]
@@ -372,6 +376,49 @@ def ask(question, default=""):
     return answer or default
 
 
+def codex_models():
+    """The models Codex lists for this account, from its local cache."""
+    path = Path(os.environ.get("CODEX_HOME") or Path.home() / ".codex") / "models_cache.json"
+    try:
+        data = json.loads(path.read_text())
+    except (OSError, ValueError):
+        return []
+    items = data.get("models", []) if isinstance(data, dict) else []
+    return [m["slug"] for m in items if isinstance(m, dict) and m.get("slug")]
+
+
+def model_suggestions(command, flavor, used, catalog_models, picked=()):
+    """Models to offer for a command: ones used with it before, then what
+    its flavor can list, then ones picked earlier in this run. The order
+    stays the same through a run, so a number means one model. A wrapper
+    of claude may route to another provider, so only plain claude gets the
+    Claude aliases."""
+    listed = codex_models() if flavor == "codex" else list(CLAUDE_ALIASES) if command == "claude" else []
+    seen = []
+    for model in list(used) + list(catalog_models) + listed + list(picked):
+        if model and model not in seen:
+            seen.append(model)
+    return seen
+
+
+def choose_model(command, flavor, default, used, catalog_models, picked):
+    choices = model_suggestions(command, flavor, used, catalog_models, picked)
+    if not choices:
+        return ask(f"{'':12} model", default)
+    print(f"{'':12} models: " + "  ".join(f"{i}) {m}" for i, m in enumerate(choices, 1)))
+    while True:
+        answer = ask(f"{'':12} model (number or name)", default)
+        if not answer.isdigit():
+            break
+        if 1 <= int(answer) <= len(choices):
+            answer = choices[int(answer) - 1]
+            break
+        print(f"{'':12} pick 1 to {len(choices)}, or type a model name")
+    if answer not in choices:
+        print(f"{'':12} {answer} is new for {command}. Check it with the probe at the end")
+    return answer
+
+
 def probe_model(name, entry_launch, model):
     shell = user_shell()[0]
     if entry_launch.startswith("interactive:"):
@@ -439,6 +486,7 @@ def setup(args):
         return 1
 
     base = user_catalog().read_text() if user_catalog().is_file() else TEMPLATE.read_text()
+    history = {name: [m for m in e.get("models", "").split(",") if m] for name, e in read_registry().items()}
     types = catalog_types(base)
     text = base
     chosen = {}
@@ -457,7 +505,13 @@ def setup(args):
             else:
                 command = answer
             if command:
-                model = ask(f"{'':12} model", item.get("model", ""))
+                used = history.get(command, [])
+                picked = [m for c, m in chosen.values() if c == command]
+                catalog_models = [t.get("model", "") for t in types.values() if t.get("cli") == command]
+                recent = (picked[-1:] + used)[:1]
+                default = item.get("model", "") if command == item.get("cli") or not recent else recent[0]
+                model = choose_model(command, found.get(command, {}).get("flavor", ""),
+                                     default, used, catalog_models, picked)
         elif kind not in choices:
             command, model = default_cmd, item.get("model", "")
         if not command:
@@ -498,6 +552,10 @@ def setup(args):
                 text = set_option(text, f"type.{kind}", "model", model)
                 chosen[kind] = (command, model)
 
+    # Remember the models chosen per command, newest first, for next time.
+    for command in {c for c, _ in chosen.values()}:
+        models = [m for c, m in chosen.values() if c == command] + history.get(command, [])
+        found[command]["models"] = ",".join(list(dict.fromkeys(models))[:8])
     registry = read_registry()
     registry.update(found)
     write_registry(registry)
