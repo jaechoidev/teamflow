@@ -398,23 +398,33 @@ def setup(args):
         extra.append(command)
     say("looking for agent commands (this runs each one with --version)")
     found, others = detect(extra)
+
+    def show(names):
+        print("\nAgent commands found:")
+        for i, name in enumerate(names, 1):
+            e = found[name]
+            how = {"executable": "", "alias": " (alias, copied)", "function": " (function, copied)"}[e["kind"]]
+            if e.get("run") == "interactive":
+                how = f" ({e['kind']}, runs through your interactive shell)"
+            print(f"  {i}. {name:14} {e.get('version', '')}{how}")
+        if others:
+            print(f"Also found, not supported yet: {', '.join(others)}")
+
+    def ordered():
+        return sorted(found, key=lambda n: (n not in SUPPORTED, n))
+
+    names = ordered()
+    show(names)
     if interactive:
         while True:
-            name = ask("Add another command by name (Enter to skip)")
+            name = ask("\nAdd another command by name (Enter to continue)")
             if not name:
                 break
             more, _ = detect([name], scan=False)
-            found.update(more)
-    print("\nAgent commands found:")
-    names = sorted(found, key=lambda n: (n not in SUPPORTED, n))
-    for i, name in enumerate(names, 1):
-        e = found[name]
-        how = {"executable": "", "alias": " (alias, copied)", "function": " (function, copied)"}[e["kind"]]
-        if e.get("run") == "interactive":
-            how = f" ({e['kind']}, runs through your interactive shell)"
-        print(f"  {i}. {name:14} {e.get('version', '')}{how}")
-    if others:
-        print(f"Also found, not supported yet: {', '.join(others)}")
+            if more:
+                found.update(more)
+                names = ordered()
+                show(names)
     if not names:
         raise SetupError("no supported agent command found. Install Claude Code (claude) or Codex (codex), then run teamflow setup")
     if not interactive and not yes and not choices:
