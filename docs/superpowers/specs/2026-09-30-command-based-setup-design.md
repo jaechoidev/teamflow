@@ -60,7 +60,19 @@ Worker windows start their command in a non-interactive shell, which never reads
 
 Setup verifies each script: run the way a worker runs it, `--version` must print the same output as the alias or function prints in the user's interactive shell. If a script fails that check, for example because the function depends on other definitions in the startup files, the registry records `run = interactive`. That command's workers then start through the user's interactive shell, `$SHELL -ic`, and setup says so, including the costs: a slower start, startup-file output in the worker's window, and any routing variables the startup files export.
 
-The scripts live in a directory teamflow owns, not in `~/.local/bin`, so they never shadow the user's own commands. The user's shell startup files are never changed. The registry keeps a fingerprint of each copied definition. `teamflow doctor` compares it with the current definition and warns when the alias or function changed since setup: "zai-code changed. Run teamflow setup again."
+The scripts live in a directory teamflow owns, not in `~/.local/bin`, so they never shadow the user's own commands. The user's shell startup files are never changed.
+
+## Keeping copies current
+
+The user's definition is the source of truth, and a script is only a copy of it. The registry keeps a fingerprint of each copied definition, plus a hash of the shell startup files (`~/.zshrc`, `~/.zshenv`, `~/.zprofile`, or the bash equivalents) as they were when setup copied it.
+
+| When | Check | When a definition changed |
+| --- | --- | --- |
+| `teamflow update` and `teamflow install` | Full: read every copied definition from the interactive shell and compare fingerprints | Rewrite the script, verify it again with `--version`, and report the change |
+| A team starts (`start`, or an `add` that starts one) | Cheap: compare the startup files' hash. Only when it differs, do the full check | Rewrite and verify, as above |
+| `teamflow doctor` | Full | Report only |
+
+A rewritten script that fails verification falls back to `run = interactive`, as at setup, and the message says so. The startup-file hash misses a change in a file the startup files source from elsewhere, and the full check at update catches it. Workers already running keep the script they started with, and the next worker launch uses the new one.
 
 ## Setup
 
