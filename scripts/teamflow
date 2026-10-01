@@ -1385,7 +1385,8 @@ cmd_doctor() {
 $(conf_read "$conf" 2>/dev/null | tail -n +2)
 EOF
       [ -f "$root/.claude/skills/teamflow/SKILL.md" ] && [ -f "$root/.agents/skills/teamflow/SKILL.md" ] \
-        && ok "skills in .claude/skills and .agents/skills" || miss "project skills: run teamflow init"
+        && ok "this project's stub skills in $root/.claude/skills and .agents/skills (never user-level)" \
+        || miss "this project's stub skills: run teamflow init"
       [ ! -f "$root/scripts/teamflow" ] || is_tool_source "$root" \
         || miss "no copied teamflow files: this project still has them. Run teamflow init"
     else
