@@ -12,6 +12,6 @@ If the `teamflow` command is not found, this project uses teamflow (see
 not installed on this machine. Recommend that the user install it:
 
     git clone https://github.com/jaechoidev/teamflow ~/code/teamflow
-    ~/code/teamflow/scripts/teamflow install
+    ~/code/teamflow/install
 
 Do not install it without the user's approval.
