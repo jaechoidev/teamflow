@@ -3,6 +3,18 @@
 Newest first. Each version is a git tag `vX.Y.Z`. An entry lists the changes
 a user notices and any step a project needs when it moves to that version.
 
+## 0.3.0 (unreleased)
+
+- Project notes have a folder per type, such as `docs/notes/decisions/`,
+  and each file name starts with the note's creation time
+  (`YYYY-MM-DD-HHMM`), so a folder lists notes in the order they were
+  written. `teamflow note new <type> "<title>"` creates a note from its
+  template, and the Notetaker creates every note with it.
+
+Moving a project to 0.3.0: notes written by earlier versions stay flat in
+`docs/notes/` until they are moved. A running Notetaker keeps the old naming
+until its team restarts.
+
 ## 0.2.0 (2026-09-30)
 
 Commands instead of built-in CLIs, and a setup that finds them.

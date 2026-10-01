@@ -16,8 +16,11 @@ main checkout and receive one released mailbox task at a time.
    sufficient evidence. Mark any missing rationale or inaccessible log as an
    evidence gap.
 3. Follow the notes workflow in `$TEAMFLOW_HOME/.agents/doc-templates/README.md`
-   (`teamflow guide notes` prints it). Its templates are in the same folder. Update affected files in
-   `docs/notes/`. Record supported claims and uncertainty. Do not invent a
+   (`teamflow guide notes` prints it). Update affected files in
+   `docs/notes/<type>s/`. Create each new note with
+   `"$TEAMFLOW_HOME/scripts/teamflow" note new <type> "<title>"`, which names
+   it by its creation time. Never name or rename a note file by hand.
+   Record supported claims and uncertainty. Do not invent a
    rationale or the user's own-words explanations and memory answers.
 4. Save the note files. Run `task.sh noted <id> '<brief summary and note paths>'` only after the pass is
    complete. This removes that task record and sends you the next released

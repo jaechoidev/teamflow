@@ -530,7 +530,10 @@ checkout's current commit. A kept branch is reused, so its work continues.
 The installed tool ships five plain Markdown note templates: source,
 concept, code map, decision, and experiment. They share one frontmatter
 convention with a review status, and `teamflow guide notes` prints the
-workflow. Worker windows find the templates under `$TEAMFLOW_HOME`. Notes belong to the Notetaker alone. Teamflow creates
+workflow. Each type has a folder, `docs/notes/decisions/` for example, and
+each note's file name starts with its creation time, so a folder sorts in
+the order notes were written. `teamflow note new <type> "<title>"` creates
+one from its template. Notes belong to the Notetaker alone. Teamflow creates
 `docs/notes/` when a Notetaker joins the team, at start or through
 `workers add notetaker`, and never otherwise. The Delegator never writes
 notes. Without a Notetaker, released tasks wait in the mailbox, and a

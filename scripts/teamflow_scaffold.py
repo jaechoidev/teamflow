@@ -19,8 +19,12 @@ migrate <root> <git-common-dir>
     .git/ai-team, .ai-team-worktrees/, and ai-team/<id> branches.
 drop-pane-delegator <config>
     Remove the [pane.delegator] section of the removed full-team mode.
+note-new <tool-home> <root> <type> <title>
+    Create a project note from the type's template at
+    docs/notes/<type>s/<YYYY-MM-DD-HHMM>-<slug>.md and print its path.
 """
 
+from datetime import datetime
 import hashlib
 import os
 from pathlib import Path
@@ -29,6 +33,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import unicodedata
 
 SKILLS = ("teamflow", "teamflow-resume", "teamflow-kill", "teamflow-workers", "teamflow-trim")
 SCRIPTS = ("scripts/teamflow", "scripts/teamflow_workers.py", "scripts/teamflow_scaffold.py",
@@ -406,6 +411,30 @@ def drop_pane_delegator(config):
     say(f"removed [pane.delegator] from {path.name}: the Delegator always runs in your own agent session")
 
 
+def note_new(home, root, kind, title):
+    """Create a note named by its creation time, so a folder sorts in the
+    order notes were written. The name never changes later, because links
+    to the note use it."""
+    templates = home / ".agents" / "doc-templates"
+    kinds = sorted(f.stem for f in templates.glob("*.md") if f.name != "README.md")
+    if kind not in kinds:
+        raise ScaffoldError(f"no note type {kind!r}. Types: {', '.join(kinds)}")
+    slug = re.sub(r"[\W_]+", "-", unicodedata.normalize("NFKC", title).lower()).strip("-")[:60].rstrip("-")
+    if not slug:
+        raise ScaffoldError("the title needs a letter or digit to name the file")
+    folder = root / "docs" / "notes" / f"{kind}s"
+    for existing in sorted(folder.glob(f"*-{slug}.md")):
+        if re.fullmatch(rf"\d{{4}}-\d{{2}}-\d{{2}}-\d{{4}}-{re.escape(slug)}\.md", existing.name):
+            raise ScaffoldError(f"{existing.relative_to(root)} has this title. Update it, or choose another title")
+    now = datetime.now()
+    path = folder / f"{now:%Y-%m-%d-%H%M}-{slug}.md"
+    text = (templates / f"{kind}.md").read_text()
+    folder.mkdir(parents=True, exist_ok=True)
+    with open(path, "x") as f:  # never overwrite a note
+        f.write(text.replace("{{title}}", title).replace("{{date}}", f"{now:%Y-%m-%d}"))
+    print(path.relative_to(root))
+
+
 def say(message):
     print(f"teamflow: {message}", file=sys.stderr)
 
@@ -424,6 +453,8 @@ def main(argv):
         migrate(Path(args[0]), Path(args[1]))
     elif command == "drop-pane-delegator" and len(args) == 1:
         drop_pane_delegator(args[0])
+    elif command == "note-new" and len(args) == 4:
+        note_new(Path(args[0]).resolve(), Path(args[1]).resolve(), args[2], args[3])
     else:
         raise ScaffoldError("usage: see the header of teamflow_scaffold.py")
     return 0

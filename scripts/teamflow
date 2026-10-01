@@ -35,6 +35,9 @@
 #   teamflow guide <skill>|notes  print the full instructions of a skill
 #   teamflow role show|edit <role>  print the role in effect, or copy the
 #                                 default into the project to customize it
+#   teamflow note new <type> <title>  create a project note from its template
+#                                 in docs/notes/<type>s/, named by its creation
+#                                 time, and print its path
 #   teamflow --verify             show worker windows, acknowledgements, the
 #                                 Delegator, and the watcher
 #   teamflow --check-models       probe configured models (spends a little quota)
@@ -1428,6 +1431,14 @@ cmd_role() { # role show|edit <name>: print the role in effect, or copy the defa
   fi
 }
 
+cmd_note() { # note new <type> <title>: create a project note and print its path
+  local root types
+  types="$(ls "$TOOL_HOME/.agents/doc-templates" | grep -v '^README' | sed 's/\.md$//' | paste -sd ' ' -)"
+  [ "${1:-}" = new ] && [ $# -eq 3 ] || die "usage: teamflow note new <type> \"<title>\"  (types: $types)"
+  root="$(team_root)" || exit $?
+  python3 "$TOOL_HOME/scripts/teamflow_scaffold.py" note-new "$TOOL_HOME" "$root" "$2" "$3"
+}
+
 # ---------- main -----------------------------------------------------------------
 
 # Mode and flags may come in any order. Everything is parsed and checked
@@ -1443,6 +1454,7 @@ case "${1:-}" in
   guide) shift; cmd_guide "$@"; exit $? ;;
   setup) shift; exec python3 "$TOOL_HOME/scripts/teamflow_setup.py" setup "$@" ;;
   role) shift; cmd_role "$@"; exit $? ;;
+  note) shift; cmd_note "$@"; exit $? ;;
   version|--version) cmd_version; exit 0 ;;
   doctor) cmd_doctor; exit $? ;;
   update) cmd_update; exit $? ;;

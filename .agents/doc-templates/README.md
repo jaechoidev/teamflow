@@ -2,10 +2,9 @@
 
 Templates for notes the team keeps current while it builds. Notes belong to
 the Notetaker: teamflow creates `docs/notes/` when a Notetaker joins the team,
-at start or when one is added. `teamflow init` copies this
-template folder and, as with roles, stages a changed shipped file as
-`<file>.new` instead of overwriting yours. Plain Markdown works in any editor,
-and Obsidian reads the frontmatter as properties.
+at start or when one is added. The templates ship with the installed
+teamflow and are never copied into the project. Plain Markdown works in any
+editor, and Obsidian reads the frontmatter as properties.
 
 ## Templates
 
@@ -22,26 +21,42 @@ slice. Concept notes are the learning part.
 
 ## Creating a note
 
-Notes live in the main checkout, where the Notetaker works, under
-`docs/notes/`. Use one file per note, named in kebab-case. `set -C` makes
-this refuse to overwrite an existing note:
+Notes live in the main checkout, where the Notetaker works, one folder per
+type and one file per note:
 
 ```
-mkdir -p docs/notes
-( set -C; sed -e 's|{{title}}|Task mailbox|g' -e "s|{{date}}|$(date +%F)|g" \
-  "$TEAMFLOW_HOME/.agents/doc-templates/concept.md" > docs/notes/task-mailbox.md )
+docs/notes/
+  code-maps/  concepts/  decisions/  experiments/  sources/
+    2026-09-30-2041-film-accumulation-and-rng.md
 ```
 
-In a title, put a backslash before any `&`, `|`, or `\`. Copying a
-template by hand and filling in `{{title}}` and `{{date}}` works too.
+A file name starts with the note's creation time, `YYYY-MM-DD-HHMM`, so a
+folder lists notes in the order they were written. The rest is the title in
+lowercase, with dashes between words. The name never changes after that,
+even when the note is updated, because links to the note use it.
+
+Create every note with `teamflow note new`. It picks the folder, names the
+file, fills the template's title and date, refuses to overwrite a note or to
+repeat a title of the same type, and prints the new note's path:
+
+```
+teamflow note new concept "Task mailbox"
+```
+
+In a worker window, `"$TEAMFLOW_HOME/scripts/teamflow"` is the team's own
+launcher, in case `teamflow` is not on `PATH` there.
+
+Link a note by its file name without `.md`, for example
+`[[2026-09-30-2041-film-accumulation-and-rng]]`. Obsidian finds it in any
+folder. `[[2026-09-30-2041-film-accumulation-and-rng|Film accumulation]]`
+shows a shorter label.
 
 Obsidian is optional. To browse, open the main checkout's `docs/` as a
-vault so notes sit beside Superpowers specs and plans. Its core Templates
-plugin fills `{{title}}` (with the file name) and `{{date}}` too, but it
-only reads templates inside the vault, so copy these files to
-`docs/templates/` to use it. Keep `docs/.obsidian/` out of commits unless
-the user wants shared settings. Init does not create a vault or `docs/`.
-Teamflow creates `docs/notes/` with the Notetaker but does not configure Obsidian.
+vault so notes sit beside Superpowers specs and plans. Create notes with
+`teamflow note new` rather than Obsidian's Templates plugin, which names
+files differently. Keep `docs/.obsidian/` out of commits unless the user
+wants shared settings. Init does not create a vault or `docs/`. Teamflow
+creates `docs/notes/` with the Notetaker but does not configure Obsidian.
 
 ## Superpowers specs and plans
 
@@ -68,7 +83,7 @@ Every template starts with these properties, in this order:
 | `reviewed_by` | last reviewer: a role id or `user` |
 | `reviewed_on` | last review date |
 | `reviewed_commit` | commit the code claims were checked at, quoted: `"abc1234"` |
-| `superseded_by` | the replacement note: `"[[new-note]]"` |
+| `superseded_by` | the replacement note: `"[[2026-10-02-0915-new-note]]"` |
 | `code_paths` | repo paths the claims depend on, e.g. `[scripts/teamflow]` |
 
 `source.md` adds `url`. Leave a value empty rather than guess.
@@ -99,7 +114,8 @@ tells readers how far to trust a note. It never blocks work.
 2. The Notetaker reads the result and investigates its underlying code,
    tests, commits, discussion, specs, plans, and original sources as needed.
    Find affected notes, e.g. `rg -l 'src/auth' docs/notes`.
-3. Update or create notes from verified evidence. New notes start as `draft`.
+3. Update or create notes from verified evidence. Create a note with
+   `teamflow note new <type> "<title>"`. New notes start as `draft`.
    A substantive edit turns `reviewed` into `revised`. If nothing durable
    changed, record that in the completion summary.
 4. After saving files, run `task.sh noted <id> '<summary and note paths>'`.
