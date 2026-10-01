@@ -3,6 +3,27 @@
 Newest first. Each version is a git tag `vX.Y.Z`. An entry lists the changes
 a user notices and any step a project needs when it moves to that version.
 
+## 0.2.0 (unreleased)
+
+Commands instead of built-in CLIs, and a setup that finds them.
+
+- Install with `git clone`, `cd teamflow`, `./install`. A first install runs
+  `teamflow setup`, and offers to put `~/.local/bin` on `PATH`.
+- `teamflow setup` finds `claude`, `codex`, and aliases or shell functions
+  that wrap them, such as `zai-code`. You choose a command and model per
+  worker type, and it writes `~/.config/teamflow/teamflow.conf`, which new
+  projects start from.
+- `cli =` names any command. Its flavor, `claude` or `codex`, decides the
+  flags teamflow passes. Aliases and functions are copied into scripts under
+  `~/.local/share/teamflow/commands/` and kept in step with your shell by
+  `teamflow update`, `install`, team starts, and `doctor`.
+- `cli = zai` and `[workspace] zai_env` are deprecated. They still work in
+  0.2.
+
+Moving a project to 0.2.0: nothing is required. To leave `cli = zai`, make a
+command that runs Claude Code through z.ai, run `teamflow setup`, and run
+`teamflow init` in the project, which offers the change.
+
 ## 0.1.0 (2026-09-30)
 
 The first version installed once per machine.

@@ -9,6 +9,7 @@ import hashlib
 import os
 from pathlib import Path
 import re
+from teamflow_setup import resolve_command  # a sibling module
 import subprocess
 import sys
 import tempfile
@@ -21,6 +22,9 @@ SLUG = re.compile(r"^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$")
 
 class ConfigError(Exception):
     pass
+
+
+COMMAND = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._+-]*$")
 
 
 def role_path(root, role_file):
@@ -97,19 +101,26 @@ def resolve(cp):
     for row in rows:
         if row[3] == "":
             raise ConfigError(f"{row[0]} has no model")
-        if row[2] not in {"claude", "codex", "zai"}:
-            raise ConfigError(f"{row[0]} has unsupported cli {row[2]!r}")
+        if not COMMAND.fullmatch(row[2]):
+            raise ConfigError(f"{row[0]} has an invalid cli {row[2]!r}: name a command such as claude or codex")
+        if row[8] not in {"claude", "codex", "zai"}:
+            raise ConfigError(f"{row[0]}: cli {row[2]} has no known flavor. Run teamflow setup, "
+                              f"or set flavor = claude or codex in its type")
         if row[5] not in {"yes", "no"}:
             raise ConfigError(f"{row[0]} worktree must be yes or no")
     return prefix, zai_env, rows
 
 
 def pane_row(worker_id, item, kind="", role_file=""):
+    """id, label, cli, model, effort, worktree, type, role file, flavor, launch.
+    The flavor is the flag set the command speaks. launch says how to start it
+    on this machine (see teamflow_setup.resolve_command), empty when missing."""
     label = item.get("label", kind or worker_id)
     if kind and worker_id != "notetaker":
         label = f"{label} ({worker_id})"
+    flavor, launch = resolve_command(item.get("cli", ""), item.get("flavor", ""))
     fields = [worker_id, label, item.get("cli", ""), item.get("model", ""),
-              item.get("effort", ""), item.get("worktree", "no"), kind, role_file]
+              item.get("effort", ""), item.get("worktree", "no"), kind, role_file, flavor, launch]
     return [valid_field(field, worker_id) for field in fields]
 
 
@@ -270,9 +281,9 @@ def sync_workers(root, path, desired):
     for worker in obsolete:
         guard_removal(root, worker)
     missing = [row for row in rows if row[0] not in panes]
-    for worker, _, cli, _, _, _, _, role_file in missing:
-        if not shutil.which("claude" if cli == "zai" else cli):
-            raise ConfigError(f"required CLI not on PATH: {cli}")
+    for worker, _, cli, _, _, _, _, role_file, _, launch in missing:
+        if not launch:
+            raise ConfigError(f"command not found: {cli}. Run teamflow setup")
         if role_file and not role_path(root, role_file).is_file():
             raise ConfigError(f"missing role file: {role_file}")
         if cli == "zai" and not Path(zai_env).expanduser().is_file():
@@ -411,7 +422,7 @@ def list_workers(root, path):
     listed = {row[0] for row in rows}
     if not record and not any(row[0] != "delegator" for row in rows):
         print(f"no default team in {path.name}. Add workers on demand: teamflow add <type> (see teamflow types)")
-    for worker_id, label, cli, model, _, worktree, kind, _ in rows:
+    for worker_id, label, cli, model, _, worktree, kind, _, _, _ in rows:
         if worker_id == "delegator":
             continue
         state = panes.get(worker_id, "stopped")

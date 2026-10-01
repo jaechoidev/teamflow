@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+# Install teamflow from this checkout: ./install [--dev] [--bin-dir <dir>]
+# It copies the tool to ~/.local/share/teamflow/<version>, links
+# ~/.local/bin/teamflow, and on a first install runs teamflow setup.
+exec bash "$(cd "$(dirname "$0")" && pwd)/scripts/teamflow" install "$@"

@@ -18,7 +18,7 @@ class WorkersTest(unittest.TestCase):
         self.root = Path(self.temp.name)
         subprocess.run(["git", "init", "-q", str(self.root)], check=True)
         (self.root / "scripts").mkdir()
-        for name in ("teamflow", "teamflow_workers.py", "teamflow_scaffold.py"):
+        for name in ("teamflow", "teamflow_workers.py", "teamflow_scaffold.py", "teamflow_setup.py"):
             shutil.copy2(SOURCE / "scripts" / name, self.root / "scripts" / name)
         shutil.copy2(SOURCE / "teamflow.conf", self.root / "teamflow.conf")
         roles = self.root / ".agents" / "roles"
@@ -35,6 +35,9 @@ class WorkersTest(unittest.TestCase):
                         "-c", "user.email=test@example.com", "commit", "-qm", "seed"], check=True)
 
     def teamflow(self, *args, env=None):
+        # The machine's command registry and catalog stay out of the tests.
+        env = {**(env or os.environ), "XDG_DATA_HOME": str(self.root / ".xdg-data"),
+               "XDG_CONFIG_HOME": str(self.root / ".xdg-config")}
         return subprocess.run(["bash", "scripts/teamflow", *args], cwd=self.root,
                               env=env, text=True, capture_output=True)
 

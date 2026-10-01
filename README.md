@@ -16,27 +16,51 @@ and login, and results arrive asynchronously.
 
 ## Install
 
-Once per machine, from a clone of this repository:
+Once per machine:
 
 ```
-git clone https://github.com/jaechoidev/teamflow ~/code/teamflow
-~/code/teamflow/scripts/teamflow install
-teamflow doctor
+git clone https://github.com/jaechoidev/teamflow
+cd teamflow
+./install
 ```
 
-`install` copies the checkout to `~/.local/share/teamflow/<version>`, points
+`./install` copies the checkout to `~/.local/share/teamflow/<version>`, points
 `~/.local/share/teamflow/current` at it, and links `~/.local/bin/teamflow` to
-its launcher, so every shell and every agent finds `teamflow` on `PATH`.
-`<version>` is the checkout's `git describe --tags`, for example `v0.1.0`.
-`install --dev` points `current` at the checkout itself, so edits apply at
-once while you work on teamflow. `teamflow update` runs `git pull` in the
-recorded checkout and installs again. `teamflow version` shows what is
-installed, and `teamflow doctor` checks tmux 3.2+, git 2.31+, Python 3.8+,
-the command on `PATH`, and, inside a project, the agent CLIs its config uses.
+its launcher, so every shell and every agent finds `teamflow` on `PATH`. If
+`~/.local/bin` is not on `PATH`, it offers to add the line to your shell
+profile, and asks first. `<version>` is the checkout's `git describe --tags`,
+for example `v0.2.0`. Keep the clone: `teamflow update` runs `git pull` in it
+and installs again. `./install --dev` points `current` at the checkout itself,
+so edits apply at once while you work on teamflow.
 
-A running team keeps the version it started with. An update applies at the
-team's next start. Earlier versions stay in `~/.local/share/teamflow/`, so you
-can point `current` back at one.
+On a first install, `./install` runs `teamflow setup`:
+
+```
+Agent commands found:
+  1. claude         2.1.286 (Claude Code)
+  2. codex          codex-cli 0.159.2
+  3. zai-code       2.1.286 (Claude Code) (function, copied)
+Also found, not supported yet: opencode, cursor-agent, aider
+
+researcher   command (number, name, or s to skip) [claude] > 3
+             model [sonnet] > glm-5.3
+...
+Wrote ~/.config/teamflow/teamflow.conf. New projects start from it at `teamflow init`.
+```
+
+Setup finds the agent commands on this machine: `claude` and `codex` on
+`PATH`, plus aliases and shell functions that wrap one of them, such as a
+`zai-code` that routes Claude Code to z.ai. You pick a command and a model for
+each worker type, and it writes your catalog, which new projects start from.
+Run `teamflow setup` again any time. Without a terminal, it takes `--yes` or
+choices such as `--type researcher=zai-code:glm-5.3`.
+
+`teamflow version` shows what is installed, and `teamflow doctor` checks tmux
+3.2+, git 2.31+, Python 3.8+, the command on `PATH`, copied aliases and
+functions, and, inside a project, the commands its config uses. A running
+team keeps the version it started with. An update applies at the team's next
+start. Earlier versions stay in `~/.local/share/teamflow/`, so you can point
+`current` back at one.
 
 ## Quickstart
 
@@ -113,26 +137,50 @@ under the directory it ran in.
 ## Worker catalog
 
 `teamflow.conf` has two parts. `[type.<name>]` sections are the catalog:
-each sets a CLI, model, effort, worktree policy, role file, and `use_for`,
-which tells the Delegator when to pick that type. `teamflow types` lists
-them. The shipped catalog:
+each sets a command, model, effort, worktree policy, role file, and
+`use_for`, which tells the Delegator when to pick that type. `teamflow types`
+lists them. The shipped catalog, before `teamflow setup` adapts it:
 
-| Type | Agent | Use for |
+| Type | Command and model | Use for |
 | --- | --- | --- |
-| `researcher` | z.ai GLM (`glm-5.3`, max) | external research, sources and citations, comparing options |
-| `reviewer` | Claude (`fable`, xhigh) | reviewing plans, architecture, and diffs |
-| `developer-l` | Claude (`fable`, max) | large or risky changes, cross-cutting refactors, hard bugs |
-| `developer-m` | Claude (`opus`, max) | typical features and fixes with a clear scope |
-| `developer-s` | z.ai GLM (`glm-5.3`, max) | small, well-defined edits, docs, mechanical changes |
-| `notetaker` | Claude (`opus`, xhigh) | project notes in `docs/notes/`, only when you want notes |
+| `researcher` | `claude`, `sonnet`, high | external research, sources and citations, comparing options |
+| `reviewer` | `claude`, `fable`, xhigh | reviewing plans, architecture, and diffs |
+| `developer-l` | `claude`, `fable`, max | large or risky changes, cross-cutting refactors, hard bugs |
+| `developer-m` | `claude`, `opus`, max | typical features and fixes with a clear scope |
+| `developer-s` | `claude`, `sonnet`, high | small, well-defined edits, docs, mechanical changes |
+| `notetaker` | `claude`, `opus`, xhigh | project notes in `docs/notes/`, only when you want notes |
+
+### Commands
+
+`cli = <name>` names a command: an executable on `PATH`, an alias, or a shell
+function. teamflow drives it by its flavor, the flags it understands:
+`claude` for Claude Code and wrappers of it, and `codex` for Codex. A
+wrapper keeps the provider details, such as an endpoint and a key, inside
+your own command. teamflow never reads or writes them.
+
+Worker windows start their command in a non-interactive shell, which has no
+aliases or functions. So `teamflow setup` copies each alias or function it
+uses into a script under `~/.local/share/teamflow/commands/` and records it in
+`~/.local/share/teamflow/commands.conf`, the commands on this machine. Your
+shell startup files stay untouched. Setup checks that the copy reports the
+same `--version`. When it does not, that command's workers start through your
+interactive shell, which is slower and loads your whole startup files. The
+copies follow your definitions: `teamflow update` and `install` compare every
+copy, a team start compares when your shell startup files changed, and
+`teamflow doctor` reports stale ones. A type may set `flavor =` itself.
+
+`cli = zai`, with `[workspace] zai_env`, still works and is deprecated: make
+a command that runs Claude Code through z.ai, run `teamflow setup`, and set
+`cli = <command>`. `teamflow init` offers that change when your catalog has
+such a command.
 
 `[worker.<instance-id>]` sections are the optional default team that
 `teamflow config` and `teamflow start` launch. The shipped default team is
 `researcher-1`, `reviewer-1`, `developer-l-1`, and the `notetaker`. A config
 with no worker sections is a pure catalog, and workers only join on demand.
 The three developer types share the developer role. The type
-selects the CLI, model, and effort, and the Delegator defines task scope in
-each assignment. The Notetaker has the singleton ID `notetaker` and must be
+selects the command, model, and effort, and the Delegator defines task scope
+in each assignment. The Notetaker has the singleton ID `notetaker` and must be
 last in a default team. The launcher never silently substitutes a model. If
 something is missing it says exactly what and where to fix it.
 
@@ -257,8 +305,8 @@ teamflow start --config teamflow.zai.conf
 cp teamflow.conf teamflow.zai.conf
 ```
 
-Edit the types in the copy, for example `cli = zai` and `model = glm-5.3`
-for every developer type, then check the models and switch:
+Edit the types in the copy, for example `cli = zai-code` and
+`model = glm-5.3` for every developer type, then check the models and switch:
 
 ```
 teamflow --check-models --config teamflow.zai.conf
@@ -313,11 +361,9 @@ skills reach the agent as stubs in the project (see What a project holds).
 - macOS or Linux; `tmux`, `python3`, and `git` ≥ 2.31 (the launcher uses
   `git rev-parse --path-format=absolute`, introduced in Git 2.31.0, to
   locate the shared git dir that hosts the mailbox)
-- `codex` CLI on PATH (Delegator)
-- `claude` CLI on PATH (Claude panes; logged in)
-- z.ai panes: an env file with the backend URL + token — default
-  `~/.zai/env.sh`, changeable via `[workspace] zai_env`. Keys never live in
-  this repo.
+- the agent CLIs your catalog uses, logged in: `claude` (Claude Code),
+  `codex`, or your own wrappers of them. Keys never live in this repo or in
+  teamflow's files.
 
 ## Daily use
 

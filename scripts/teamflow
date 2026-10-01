@@ -7,6 +7,8 @@
 #                                 ~/.local/bin/teamflow to it. --dev runs the
 #                                 checkout itself, for developing teamflow
 #   teamflow update               git pull the recorded checkout and reinstall
+#   teamflow setup                choose this machine's agent commands per worker
+#                                 type. New projects start from that catalog
 #   teamflow version | doctor     show the install, or check what teamflow needs
 #
 # In a project:
@@ -412,10 +414,7 @@ reg_follow_cli() { # $1 mailbox $2 role $3 configured cli
   local d="$1/sessions" was
   was="$(reg_get "$1" "$2" CLI)"
   [ -n "$was" ] && [ "$was" != "$3" ] || return 0
-  case "$was" in
-    codex|claude|zai) mv "$d/$2" "$d/$2.$was" ;;
-    *) rm -f "$d/$2" ;;   # not an entry this launcher wrote
-  esac
+  mv "$d/$2" "$d/$2.$was"
   if [ -f "$d/$2.$3" ]; then mv "$d/$2.$3" "$d/$2"; fi
 }
 
@@ -604,9 +603,16 @@ EOF
 
   python3 "$TOOL_HOME/scripts/teamflow_scaffold.py" drop-pane-delegator "$root/teamflow.conf" || exit 1
   if [ ! -e "$root/teamflow.conf" ]; then
-    cp "$TOOL_HOME/teamflow.conf" "$root/teamflow.conf"
-    say "wrote teamflow.conf: the worker catalog and default team, owned by this project"
+    local catalog="${XDG_CONFIG_HOME:-$HOME/.config}/teamflow/teamflow.conf"
+    if [ -f "$catalog" ]; then
+      cp "$catalog" "$root/teamflow.conf"
+      say "wrote teamflow.conf from your catalog ($catalog), owned by this project"
+    else
+      cp "$TOOL_HOME/.agents/teamflow.conf" "$root/teamflow.conf"
+      say "wrote teamflow.conf from the shipped catalog. Run teamflow setup to choose this machine's commands for new projects"
+    fi
   fi
+  python3 "$TOOL_HOME/scripts/teamflow_setup.py" offer-zai "$root/teamflow.conf"
   python3 "$TOOL_HOME/scripts/teamflow_scaffold.py" set-version "$root/teamflow.conf" "$(tool_version)" || exit 1
 
   # AGENTS.md marked section: replace if present, else append; never touch
@@ -651,17 +657,18 @@ cmd_start() { # $1 --config value ('' = default config)  $2 --only value  $3 --l
 }
 
 # Shared worker conversation and launch preparation.
-pane_cmd() { # role cli model effort cwd rolefile sid mode type -> pane shell command
+pane_cmd() { # role cli model effort cwd rolefile sid mode type flavor launch -> pane shell command
   local prole="$1" pcli="$2" pmodel="$3" peffort="$4" pcwd="$5" pfile="$6" psid="$7" pmode="$8" ptype="$9"
+  local pflavor="${10}" plaunch="${11}"
   local envs qfile qmailbox qlib sflag
   qfile="$(shell_quote "$pfile")"
   qmailbox="$(shell_quote "$mailbox")"
   qlib="$(shell_quote "$lib_dir")"
-  # export (a shell builtin) rather than the env binary: the zai pane starts
-  # with `.` (source), which env cannot execute.
+  # export (a shell builtin) rather than the env binary: a deprecated zai
+  # worker starts with `.` (source), which env cannot execute.
   envs="export AGENT_ROLE=$(shell_quote "$prole") AGENT_WORKER_TYPE=$(shell_quote "$ptype") AGENT_ID=$(shell_quote "$sess-$prole") \
 AGENT_ROLE_FILE=$qfile AGENT_MAILBOX=$qmailbox AGENT_LIB_DIR=$qlib TEAMFLOW_HOME=$(shell_quote "$TOOL_HOME");"
-  local base="" bin
+  local args="" run=""
   sflag="--session-id"
   [ "$pmode" = resume ] && sflag="--resume"
   # Workers get no message and idle until addressed. The notetaker checks
@@ -672,9 +679,8 @@ AGENT_ROLE_FILE=$qfile AGENT_MAILBOX=$qmailbox AGENT_LIB_DIR=$qlib TEAMFLOW_HOME
   if [ "$prole" = notetaker ]; then
     hello=" $(shell_quote "You are the team Notetaker. Read your role file and AGENTS.md, then run: bash $qlib/task.sh ack; bash $qlib/note-queue.sh resume. Reply READY only if no note task is waiting.")"
   fi
-  case "$pcli" in
+  case "$pflavor" in
     codex)
-      bin="$(shell_quote "$CODEX_BIN")"
       # Reasoning effort has no --effort flag on codex. It rides as a -c
       # config override. shell_quote keeps the configured value a single
       # safe word. Empty effort means: let codex use its own default.
@@ -685,26 +691,30 @@ AGENT_ROLE_FILE=$qfile AGENT_MAILBOX=$qmailbox AGENT_LIB_DIR=$qlib TEAMFLOW_HOME
         # explicit-id resume: flags belong to the resume subcommand
         # (codex-cli 0.156.1 help); never --last/--continue (picker would
         # be cwd-scoped across roles).
-        base="$bin resume $(shell_quote "$psid") --dangerously-bypass-approvals-and-sandbox -m $(shell_quote "$pmodel") $qeff -C $(shell_quote "$pcwd")"
+        args="resume $(shell_quote "$psid") --dangerously-bypass-approvals-and-sandbox -m $(shell_quote "$pmodel") $qeff -C $(shell_quote "$pcwd")"
       else
-        base="$bin --dangerously-bypass-approvals-and-sandbox -m $(shell_quote "$pmodel") $qeff \
+        args="--dangerously-bypass-approvals-and-sandbox -m $(shell_quote "$pmodel") $qeff \
 $(shell_quote "You are the team $prole. Read $pfile and AGENTS.md in $pcwd. Run: bash $qlib/task.sh ack. $([ "$prole" = notetaker ] && printf 'Then run: bash %s/note-queue.sh resume.' "$qlib") Reply READY only if no task is waiting.")"
       fi
       ;;
-    claude)
-      bin="$(shell_quote "$CLAUDE_BIN")"
-      base="unset $CLAUDE_ROUTING_VARS; $bin $sflag $(shell_quote "$psid") --model $(shell_quote "$pmodel")"
-      [ -n "$peffort" ] && base="$base --effort $(shell_quote "$peffort")"
-      base="$base --append-system-prompt-file $qfile$hello"
-      ;;
-    zai)
-      bin="$(shell_quote "$CLAUDE_BIN")"
-      base="unset $CLAUDE_ROUTING_VARS; . $(shell_quote "$zai_env") && $bin $sflag $(shell_quote "$psid") --model $(shell_quote "$pmodel")"
-      [ -n "$peffort" ] && base="$base --effort $(shell_quote "$peffort")"
-      base="$base --append-system-prompt-file $qfile$hello"
+    claude|zai)
+      args="$sflag $(shell_quote "$psid") --model $(shell_quote "$pmodel")"
+      [ -n "$peffort" ] && args="$args --effort $(shell_quote "$peffort")"
+      args="$args --append-system-prompt-file $qfile$hello"
       ;;
   esac
-  printf '%s %s' "$envs" "$base"
+  # How the command starts on this machine (teamflow_setup.py resolve): its
+  # path, a script copied from an alias or function, or, for one whose copy
+  # did not work, the user's interactive shell.
+  case "$plaunch" in
+    exec:*|script:*) run="$(shell_quote "${plaunch#*:}") $args" ;;
+    zai:*) run=". $(shell_quote "$zai_env") && $(shell_quote "${plaunch#zai:}") $args" ;;
+    interactive:*) run="exec $(shell_quote "${SHELL:-/bin/sh}") -ic $(shell_quote "${plaunch#interactive:} $args")" ;;
+  esac
+  # A Claude-flavored command must never inherit another backend's routing.
+  # A wrapper sets its own after this.
+  [ "$pflavor" = codex ] || run="unset $CLAUDE_ROUTING_VARS; $run"
+  printf '%s %s' "$envs" "$run"
 }
 
 
@@ -715,7 +725,7 @@ prepare_worker() {
   reg_follow_cli "$mailbox" "$role" "$cli"
   sid="$(reg_get "$mailbox" "$role" SESSION_ID)"
   was_cwd="$(reg_get "$mailbox" "$role" CWD)"
-  case "$cli" in
+  case "$flavor" in
     claude|zai)
       # Claude files a transcript under the directory it ran in, so resume
       # only there. A moved worktree starts a new conversation.
@@ -739,7 +749,7 @@ prepare_worker() {
   # A role file in the project overrides the installed default.
   local resolved_role_file
   resolved_role_file="$(role_path "$root" "${role_file:-.agents/roles/$role.md}")"
-  worker_command="$(pane_cmd "$role" "$cli" "$model" "$effort" "$cwd" "$resolved_role_file" "$sid" "$mode" "$worker_type")"
+  worker_command="$(pane_cmd "$role" "$cli" "$model" "$effort" "$cwd" "$resolved_role_file" "$sid" "$mode" "$worker_type" "$flavor" "$launch")"
 }
 
 # ---------- up -----------------------------------------------------------------
@@ -817,6 +827,10 @@ cmd_up() { # $1 attach (1|0)  $2 --config value ('' = default config)  $3 worker
     confout="$(conf_read "$roster")" || die "cannot parse the session roster"
   fi
 
+  # Copied aliases and functions follow the user's shell. A cheap check:
+  # only when the shell startup files changed does it read the definitions.
+  python3 "$TOOL_HOME/scripts/teamflow_setup.py" refresh --cheap || true
+
   # ---- preflight: config + CLIs (fail before creating anything) -------------
   local tsv roles="" missing="" note_tsv="" worker_count
   tsv="$(printf '%s' "$confout" | tail -n +2)"
@@ -830,26 +844,22 @@ cmd_up() { # $1 attach (1|0)  $2 --config value ('' = default config)  $3 worker
   [ "$worker_count" -gt 0 ] \
     || die "$conf has no default team. Add workers on demand with teamflow add <type> (see teamflow types)"
 
-  while IFS="$TSV_SEP" read -r role label cli model effort worktree worker_type role_file; do
+  while IFS="$TSV_SEP" read -r role label cli model effort worktree worker_type role_file flavor launch; do
     if [ -n "$role_file" ]; then
       [ -f "$(role_path "$root" "$role_file")" ] \
         || die "[$role] role file missing: $role_file, in the project or in $TOOL_HOME"
     fi
     roles="$roles $role"
     [ -n "$cli" ] || die "[$role] cli is empty in $conf"
-    case "$cli" in
-      codex|claude) command -v "$cli" >/dev/null 2>&1 || missing="$missing $cli" ;;
-      zai)
-        command -v claude >/dev/null 2>&1 || missing="$missing claude(for zai)"
-        [ -f "$zai_env" ] || die "[$role] cli=zai but env file not found: $zai_env (set [workspace] zai_env in $conf)"
-        ;;
-      *) die "[$role] unknown cli '$cli' (expected codex | claude | zai)" ;;
-    esac
+    [ -n "$launch" ] || missing="$missing $cli"
+    if [ "$flavor" = zai ]; then
+      [ -f "$zai_env" ] || die "[$role] cli=zai but env file not found: $zai_env (set [workspace] zai_env in $conf)"
+    fi
     [ -n "$model" ] || die "[$role] model is empty — set it in $conf (no silent defaults)"
   done <<EOF
 $tsv
 EOF
-  [ -z "$missing" ] || die "required CLI(s) not on PATH:$missing"
+  [ -z "$missing" ] || die "command(s) not found on this machine:$missing. Install them, or run teamflow setup to register an alias or function"
   # --verify + exit status: plain `rev-parse HEAD` in an unborn repo prints
   # the literal word HEAD (rc 128), which the old -n test mistook for a ref.
   git -C "$root" rev-parse --verify --quiet HEAD >/dev/null 2>&1 \
@@ -863,9 +873,6 @@ EOF
   # Resolve CLIs to absolute paths NOW: pane shells may rewrite PATH
   # (e.g. ~/.zshenv prepending ~/.local/bin), which would otherwise swap the
   # binary under us between launch and boot.
-  local CODEX_BIN CLAUDE_BIN
-  CODEX_BIN="$(command -v codex)"
-  CLAUDE_BIN="$(command -v claude)"
 
   # ---- workspace: mailbox + worktrees ----------------------------------------
   mkdir -p "$mailbox/tasks" "$mailbox/acks" "$mailbox/sessions" || die "cannot create mailbox at $mailbox"
@@ -873,7 +880,7 @@ EOF
 
   local role worktree wt_root branch
   wt_root="$root/.teamflow-worktrees"
-  while IFS="$TSV_SEP" read -r role label cli model effort worktree worker_type role_file; do
+  while IFS="$TSV_SEP" read -r role label cli model effort worktree worker_type role_file flavor launch; do
     [ "$worktree" = "yes" ] || continue
     branch="teamflow/$role"
     if git -C "$wt_root/$role" rev-parse --git-dir >/dev/null 2>&1; then
@@ -901,7 +908,7 @@ EOF
   local worker_command
   local -a order_roles order_clis order_cmds order_cwds
   local line idx=0
-  while IFS="$TSV_SEP" read -r role label cli model effort worktree worker_type role_file; do
+  while IFS="$TSV_SEP" read -r role label cli model effort worktree worker_type role_file flavor launch; do
     order_roles[$idx]="$role"
     order_clis[$idx]="$cli"
     local cwd="$root"
@@ -967,8 +974,8 @@ EOF
   # match appears (slow or old codex, dead pane), the entry stays pending and
   # `--verify` backfills it with the same cwd filter.
   local drole dlabel dcli dmodel deffort dworktree did dtries
-  while IFS="$TSV_SEP" read -r drole dlabel dcli dmodel deffort dworktree dtype dfile; do
-    if [ "$dcli" = codex ] && [ "$(reg_get "$mailbox" "$drole" STATUS)" = pending ] \
+  while IFS="$TSV_SEP" read -r drole dlabel dcli dmodel deffort dworktree dtype dfile dflavor dlaunch; do
+    if [ "$dflavor" = codex ] && [ "$(reg_get "$mailbox" "$drole" STATUS)" = pending ] \
        && [ -z "$(reg_get "$mailbox" "$drole" SESSION_ID)" ]; then
       did=""
       dtries=0
@@ -989,7 +996,7 @@ EOF
   : > "$mailbox/panes.tsv"
   local i labels
   i=0
-  while IFS="$TSV_SEP" read -r role label cli model effort worktree worker_type role_file; do
+  while IFS="$TSV_SEP" read -r role label cli model effort worktree worker_type role_file flavor launch; do
     tmux select-pane -t "${pids[$i]}" -T "$label"
     printf '%s\t%s\n' "$role" "${pids[$i]}" >> "$mailbox/panes.tsv"
     i=$((i + 1))
@@ -1063,7 +1070,7 @@ cmd_verify() { # $1 --config value ('' = the running team, else the default conf
     fi
     echo "watcher:   $([ -n "$wpid" ] && kill -0 "$wpid" 2>/dev/null && echo "running (pid $wpid)" || echo "not running"). Checks each minute. A minute after the Delegator leaves, idle workers stop, busy ones when done, all within 2 hours (log: .git/teamflow/watch.log)"
   fi
-  while IFS="$TSV_SEP" read -r role label cli model effort worktree worker_type role_file; do
+  while IFS="$TSV_SEP" read -r role label cli model effort worktree worker_type role_file flavor launch; do
     local pid ack="no" alive="gone" ack_time="" bid=""
     pid=$(awk -F '\t' -v r="$role" '$1 == r {print $2; exit}' "$mailbox/panes.tsv" 2>/dev/null)
     [ -n "$pid" ] && tmux list-panes -a -F '#{pane_id}' 2>/dev/null | grep -qx "$pid" && alive="pane $pid"
@@ -1071,7 +1078,7 @@ cmd_verify() { # $1 --config value ('' = the running team, else the default conf
     # same cwd binding as boot-time discovery, never a foreign session.
     # Not for an external Delegator: the user's own Codex session may run in
     # this directory, and cwd is all discovery goes by.
-    if [ "$cli" = codex ] && [ "$alive" != external ] \
+    if [ "$flavor" = codex ] && [ "$alive" != external ] \
        && [ "$(reg_get "$mailbox" "$role" STATUS)" = pending ] \
        && [ -z "$(reg_get "$mailbox" "$role" SESSION_ID)" ]; then
       bid="$(codex_new_ids_since "$(reg_get "$mailbox" "$role" SNAPSHOT)" "$(reg_get "$mailbox" "$role" CWD)")"
@@ -1105,38 +1112,32 @@ cmd_check_models() { # $1 --config value ('' = default config)
   if printf '%s' "$confout" | tail -n +2 | awk -v FS="$TSV_SEP" '$3 == "zai"' | grep -q .; then
     [ -f "$zai_env" ] || die "cli=zai configured but env file not found: $zai_env (set [workspace] zai_env in $conf)"
   fi
-  echo "probing models with one tiny request each (costs a little quota; claude panes: clean env, zai panes: env file)"
+  echo "probing models with one tiny request each (costs a little quota)"
   local -a probe_env
-  while IFS="$TSV_SEP" read -r role label cli model effort worktree worker_type role_file; do
+  local out
+  while IFS="$TSV_SEP" read -r role label cli model effort worktree worker_type role_file flavor launch; do
     probe_env=(env -i HOME="$HOME" PATH="$PATH")
     # STUB_LOG is a test-suite hook (stub CLIs log there); unset in real use.
     [ -n "${STUB_LOG:-}" ] && probe_env+=(STUB_LOG="$STUB_LOG")
-    case "$cli" in
-      claude)
-        if out=$("${probe_env[@]}" \
-                 claude --model "$model" --print "reply ok" 2>&1 </dev/null) \
-           && printf '%s' "$out" | grep -qi ok; then
-          printf '%-12s %-10s %-12s OK\n' "$role" "$cli" "$model"
-        else
-          printf '%-12s %-10s %-12s UNAVAILABLE: %s\n' "$role" "$cli" "$model" \
-            "$(printf '%s' "$out" | tail -1 | cut -c1-120)"
-        fi
-        ;;
-      zai)
-        if out=$("${probe_env[@]}" \
-                 bash -c '. "$1" && exec claude --model "$2" --print "reply ok"' \
-                 _ "$zai_env" "$model" 2>&1 </dev/null) \
-           && printf '%s' "$out" | grep -qi ok; then
-          printf '%-12s %-10s %-12s OK\n' "$role" "$cli" "$model"
-        else
-          printf '%-12s %-10s %-12s UNAVAILABLE: %s\n' "$role" "$cli" "$model" \
-            "$(printf '%s' "$out" | tail -1 | cut -c1-120)"
-        fi
-        ;;
-      codex)
-        printf '%-12s %-10s %-12s not probed (codex has no cheap model check; models verified at first use)\n' "$role" "$cli" "$model"
-        ;;
+    if [ "$flavor" = codex ]; then
+      printf '%-12s %-12s %-12s not probed (codex has no cheap model check; models verified at first use)\n' "$role" "$cli" "$model"
+      continue
+    fi
+    # Probe the way a worker starts the command: a clean environment for an
+    # executable or a copied script, which sets up its own routing.
+    case "$launch" in
+      exec:*|script:*) out=$("${probe_env[@]}" "${launch#*:}" --model "$model" --print "reply ok" 2>&1 </dev/null) ;;
+      zai:*) out=$("${probe_env[@]}" bash -c '. "$1" && exec "$2" --model "$3" --print "reply ok"' \
+               _ "$zai_env" "${launch#zai:}" "$model" 2>&1 </dev/null) ;;
+      interactive:*) out=$("${SHELL:-/bin/sh}" -ic "${launch#interactive:} --model $(shell_quote "$model") --print 'reply ok'" 2>&1 </dev/null) ;;
+      *) printf '%-12s %-12s %-12s NOT FOUND: run teamflow setup\n' "$role" "$cli" "$model"; continue ;;
     esac
+    if [ $? = 0 ] && printf '%s' "$out" | grep -qi ok; then
+      printf '%-12s %-12s %-12s OK\n' "$role" "$cli" "$model"
+    else
+      printf '%-12s %-12s %-12s UNAVAILABLE: %s\n' "$role" "$cli" "$model" \
+        "$(printf '%s' "$out" | tail -1 | cut -c1-120)"
+    fi
   done <<EOF
 $(printf '%s' "$confout" | tail -n +2)
 EOF
@@ -1218,17 +1219,15 @@ cmd_worktrees() { # $1 action (list|merge|discard) $2 instance id
 # Launch one worker in an existing team. The Python manager publishes the registry.
 cmd_launch_worker() { # config root session worker -> the new window's pane id
   local conf="$1" root="$2" sess="$3" wanted="$4"
-  local mailbox lib_dir wt_root zai_env CODEX_BIN CLAUDE_BIN
+  local mailbox lib_dir wt_root zai_env
   mailbox="$(git_common_dir "$root")/$MAILBOX_NAME"
   lib_dir="$TOOL_LIB"
   wt_root="$root/.teamflow-worktrees"
-  CODEX_BIN="$(command -v codex)"
-  CLAUDE_BIN="$(command -v claude)"
-  local confout role label cli model effort worktree worker_type role_file cwd worker_command
+  local confout role label cli model effort worktree worker_type role_file flavor launch cwd worker_command
   confout="$(conf_read "$conf")" || return 1
   zai_env="$(printf '%s' "$confout" | head -1 | cut -d "$TSV_SEP" -f2)"
   zai_env="${zai_env/#\~/$HOME}"
-  while IFS="$TSV_SEP" read -r role label cli model effort worktree worker_type role_file; do
+  while IFS="$TSV_SEP" read -r role label cli model effort worktree worker_type role_file flavor launch; do
     [ "$role" = "$wanted" ] || continue
     cwd="$root"
     if [ "$worktree" = yes ]; then
@@ -1281,7 +1280,38 @@ cmd_install() { # $1 dev (1|0) $2 bin dir
   git -C "$TOOL_HOME" rev-parse --git-dir >/dev/null 2>&1 \
     || die "install runs from a teamflow checkout, and this is an installed copy ($TOOL_HOME). Use teamflow update, or run scripts/teamflow install in a clone of https://github.com/jaechoidev/teamflow"
   python3 "$TOOL_HOME/scripts/teamflow_scaffold.py" install-tool "$TOOL_HOME" "$TEAMFLOW_DATA" "$2" "$1" || exit 1
-  bash "$TEAMFLOW_DATA/current/scripts/teamflow" doctor || true
+  offer_path_line "$2"
+  local installed="$TEAMFLOW_DATA/current/scripts/teamflow"
+  if [ ! -f "${XDG_CONFIG_HOME:-$HOME/.config}/teamflow/teamflow.conf" ] && [ -t 0 ] && [ -t 1 ]; then
+    bash "$installed" setup || say "setup did not finish. Run teamflow setup any time"
+  else
+    # Copied aliases and functions may have changed since the last install.
+    python3 "$TEAMFLOW_DATA/current/scripts/teamflow_setup.py" refresh || true
+  fi
+  bash "$installed" doctor || true
+}
+
+offer_path_line() { # $1 bin dir: make sure new shells find the teamflow command
+  local bin="$1" profile line answer
+  case ":$PATH:" in *":$bin:"*) return 0 ;; esac
+  case "${SHELL##*/}" in
+    zsh) profile="$HOME/.zshrc" ;;
+    bash) profile="$HOME/.bashrc" ;;
+    *) profile="$HOME/.profile" ;;
+  esac
+  line="export PATH=\"$bin:\$PATH\"  # teamflow"
+  if grep -qxF "$line" "$profile" 2>/dev/null; then
+    say "$bin is on PATH in new shells ($profile). Open a new shell, or run: $line"
+    return 0
+  fi
+  if [ -t 0 ] && [ -t 1 ]; then
+    printf 'teamflow: %s is not on PATH. Add this line to %s? [y/N] %s\n> ' "$bin" "$profile" "$line"
+    read -r answer
+    case "$answer" in
+      y|Y|yes) printf '\n%s\n' "$line" >> "$profile" && say "added it. Open a new shell to use teamflow" ; return 0 ;;
+    esac
+  fi
+  say "$bin is not on PATH. Add this line to your shell profile: $line"
 }
 
 cmd_update() { # pull the recorded checkout and install from it
@@ -1324,6 +1354,11 @@ cmd_doctor() {
   version_at_least "$v" 2.31.0 && ok "git $v" || miss "git 2.31 or newer (found $v)"
   v="$(python3 -c 'import sys; print("%d.%d.0" % sys.version_info[:2])' 2>/dev/null)"
   [ -n "$v" ] && version_at_least "$v" 3.8.0 && ok "python3 ${v%.0}" || miss "python3 3.8 or newer"
+  if python3 "$TOOL_HOME/scripts/teamflow_setup.py" refresh --report; then
+    ok "copied aliases and functions match your shell"
+  else
+    miss "copied aliases or functions are stale: teamflow update or teamflow setup refreshes them"
+  fi
   if command -v teamflow >/dev/null 2>&1; then
     ok "teamflow on PATH: $(command -v teamflow)"
   else
@@ -1339,12 +1374,16 @@ cmd_doctor() {
         version_at_least "$(tool_version)" "$need" && ok "project needs teamflow $need" \
           || miss "project needs teamflow $need or later: run teamflow update"
       fi
-      for cli in $(conf_read "$conf" 2>/dev/null | tail -n +2 | cut -d "$TSV_SEP" -f3 | sort -u); do
-        case "$cli" in
-          zai) command -v claude >/dev/null 2>&1 && ok "claude (for zai types)" || miss "claude CLI (zai types run it)" ;;
-          *) command -v "$cli" >/dev/null 2>&1 && ok "$cli" || miss "$cli CLI, used by a type in teamflow.conf" ;;
-        esac
-      done
+      local seen="" line_cli line_flavor line_launch
+      while IFS="$TSV_SEP" read -r _ _ line_cli _ _ _ _ _ line_flavor line_launch; do
+        case " $seen " in *" $line_cli "*) continue ;; esac
+        seen="$seen $line_cli"
+        if [ -z "$line_launch" ]; then miss "command $line_cli, used by a type in teamflow.conf: install it, or run teamflow setup"
+        elif [ "$line_flavor" = zai ]; then ok "zai (deprecated: make a command such as zai-code, run teamflow setup, then set cli = <command>)"
+        else ok "command $line_cli ($line_flavor, ${line_launch%%:*})"; fi
+      done <<EOF
+$(conf_read "$conf" 2>/dev/null | tail -n +2)
+EOF
       [ -f "$root/.claude/skills/teamflow/SKILL.md" ] && [ -f "$root/.agents/skills/teamflow/SKILL.md" ] \
         && ok "skills in .claude/skills and .agents/skills" || miss "project skills: run teamflow init"
       [ ! -f "$root/scripts/teamflow" ] || is_tool_source "$root" \
@@ -1401,6 +1440,7 @@ fi
 case "${1:-}" in
   task|pane) tool="$1"; shift; exec bash "$TOOL_LIB/delegator.sh" "$tool" "$@" ;;
   guide) shift; cmd_guide "$@"; exit $? ;;
+  setup) shift; exec python3 "$TOOL_HOME/scripts/teamflow_setup.py" setup "$@" ;;
   role) shift; cmd_role "$@"; exit $? ;;
   version|--version) cmd_version; exit 0 ;;
   doctor) cmd_doctor; exit $? ;;

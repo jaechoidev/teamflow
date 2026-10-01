@@ -54,7 +54,8 @@ class ProjectTest(unittest.TestCase):
             stub.chmod(0o755)
         self.claude_home = self.base / "claude-home"
         self.env = {**os.environ, **GIT, "PATH": f"{stubs}{os.pathsep}{os.environ['PATH']}",
-                    "STUB_LOG": str(self.log), "CLAUDE_CONFIG_DIR": str(self.claude_home)}
+                    "STUB_LOG": str(self.log), "CLAUDE_CONFIG_DIR": str(self.claude_home),
+                    "XDG_DATA_HOME": str(self.base / "data"), "XDG_CONFIG_HOME": str(self.base / "config")}
         self.env.pop("TMUX", None)
         self.addCleanup(subprocess.run, [str(stubs / "tmux"), "kill-server"], capture_output=True)
 
@@ -64,6 +65,7 @@ class ProjectTest(unittest.TestCase):
             shutil.copytree(SOURCE / rel, home / rel, ignore=shutil.ignore_patterns("__pycache__", "*.new"))
         shutil.copy2(SOURCE / ".agents/AGENTS-SECTION.md", home / ".agents/AGENTS-SECTION.md")
         (home / "teamflow.conf").write_text(CONFIG)
+        (home / ".agents/teamflow.conf").write_text(CONFIG)  # the shipped catalog init starts from
         git("init", "-q", "-b", "main", str(home))
         git("-C", str(home), "add", "-A")
         git("-C", str(home), "commit", "-qm", "ship")

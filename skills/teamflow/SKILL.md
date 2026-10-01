@@ -19,6 +19,10 @@ it up, then run `teamflow init`. If `teamflow doctor` or any command says the
 project still has copied teamflow files from an older version, run
 `teamflow init` to remove them, and report what it kept.
 
+If `teamflow doctor` or a start reports that a type's command is missing,
+tell the user to run `teamflow setup` in their terminal. It asks which agent
+command each worker type uses. Do not edit `cli =` lines on your own.
+
 Run `teamflow role show delegator` and follow that role, together with
 `AGENTS.md`. Where the role shows `bash "$AGENT_LIB_DIR/task.sh" ...` or
 `pane.sh ...`, use `teamflow task ...` and `teamflow pane ...` instead.
