@@ -44,6 +44,9 @@ Also found, not supported yet: opencode, cursor-agent, aider
 
 researcher   command (number, name, or s to skip) [claude] > 3
              model [sonnet] > glm-5.3
+reviewer     command (number, name, or s to skip) [claude] >
+             models: 1) sonnet  2) fable  3) opus  4) haiku  5) opus[1m]  6) sonnet[1m]
+             model (number or name) [fable] >
 ...
 Wrote ~/.config/teamflow/teamflow.conf. New projects start from it at `teamflow init`.
 ```
@@ -52,6 +55,8 @@ Setup finds the agent commands on this machine: `claude` and `codex` on
 `PATH`, plus aliases and shell functions that wrap one of them, such as a
 `zai-code` that routes Claude Code to z.ai. You pick a command and a model for
 each worker type, and it writes your catalog, which new projects start from.
+It lists models to pick by number: Codex's models for `codex`, Claude Code's
+aliases for `claude`, and the models you picked before with each command.
 Run `teamflow setup` again any time. Without a terminal, it takes `--yes` or
 choices such as `--type researcher=zai-code:glm-5.3`.
 
