@@ -1,0 +1,432 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>How teamflow works</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans+Condensed:wght@600&family=IBM+Plex+Sans:wght@400;500;600&display=swap">
+<style>
+/* Layout: one reading column, each figure on its own sheet, colors keyed to where things run (your session, the mailbox, tmux). */
+:root {
+  --bg: #f3f5f3;
+  --surface: #ffffff;
+  --fg: #17201b;
+  --muted: #56635b;
+  --line: #c4cdc7;
+  --you: #2a5ea6;
+  --you-bg: #e7eef9;
+  --mail: #95580a;
+  --mail-bg: #fbf0df;
+  --tmux: #237a43;
+  --tmux-bg: #e4f2e8;
+  --bar: #3d9f5e;
+  --tmux-ink: #06190d;
+  --stop: #b3261e;
+  --sans: "IBM Plex Sans", "Helvetica Neue", Arial, sans-serif;
+  --display: "IBM Plex Sans Condensed", "Arial Narrow", "IBM Plex Sans", sans-serif;
+  --mono: "IBM Plex Mono", ui-monospace, "SFMono-Regular", Menlo, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #0f1311;
+    --surface: #161c19;
+    --fg: #e2e9e4;
+    --muted: #97a39c;
+    --line: #34403a;
+    --you: #86aef0;
+    --you-bg: #16233a;
+    --mail: #e4a74c;
+    --mail-bg: #2a1f11;
+    --tmux: #63c587;
+    --tmux-bg: #13291b;
+    --bar: #2f8f50;
+    --tmux-ink: #03120a;
+    --stop: #f2837a;
+    color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #0f1311;
+  --surface: #161c19;
+  --fg: #e2e9e4;
+  --muted: #97a39c;
+  --line: #34403a;
+  --you: #86aef0;
+  --you-bg: #16233a;
+  --mail: #e4a74c;
+  --mail-bg: #2a1f11;
+  --tmux: #63c587;
+  --tmux-bg: #13291b;
+  --bar: #2f8f50;
+  --tmux-ink: #03120a;
+  --stop: #f2837a;
+  color-scheme: dark;
+}
+
+body { margin: 0; background: var(--bg); color: var(--fg); font-family: var(--sans); font-size: 16px; line-height: 1.55; }
+.wrap { max-width: 1040px; margin: 0 auto; padding-inline: 20px; padding-block: 44px 72px; }
+header { display: grid; gap: 14px; }
+.eyebrow { margin: 0; font-family: var(--mono); font-size: 13px; color: var(--muted); letter-spacing: .02em; }
+h1 { margin: 0; font-family: var(--display); font-weight: 600; font-size: clamp(2.1rem, 5vw, 2.9rem); line-height: 1.08; letter-spacing: -0.01em; text-wrap: balance; }
+.lede { margin: 0; max-width: 64ch; font-size: 1.08rem; }
+.legend { display: flex; flex-wrap: wrap; gap: 10px 22px; margin: 6px 0 0; padding: 0; list-style: none; font-size: 14px; color: var(--muted); }
+.legend li { display: flex; align-items: center; gap: 8px; }
+.sw { width: 14px; height: 14px; border-radius: 3px; border: 1.5px solid; }
+.sw-you { background: var(--you-bg); border-color: var(--you); }
+.sw-mail { background: var(--mail-bg); border-color: var(--mail); }
+.sw-tmux { background: var(--tmux-bg); border-color: var(--tmux); }
+section { margin-top: 60px; display: grid; gap: 14px; }
+h2 { margin: 0; font-family: var(--display); font-weight: 600; font-size: 1.55rem; line-height: 1.2; text-wrap: balance; }
+section > p { margin: 0; max-width: 64ch; color: var(--muted); }
+figure { margin: 0; background: var(--surface); border: 1px solid var(--line); border-radius: 12px; padding: 18px 18px 16px; min-width: 0; }
+.scroll { overflow-x: auto; }
+figure svg { display: block; width: 100%; height: auto; min-width: 760px; }
+figcaption { margin-top: 14px; max-width: 72ch; font-size: 15px; color: var(--muted); }
+code { font-family: var(--mono); font-size: .9em; color: var(--fg); }
+footer { margin-top: 64px; padding-top: 18px; border-top: 1px solid var(--line); font-size: 14px; color: var(--muted); }
+footer a { color: var(--you); }
+a:focus-visible { outline: 2px solid var(--you); outline-offset: 2px; }
+
+/* drawing */
+.b { fill: var(--surface); stroke: var(--line); stroke-width: 1.25; }
+.b-you { fill: var(--you-bg); stroke: var(--you); }
+.b-mail { fill: var(--mail-bg); stroke: var(--mail); }
+.b-tmux { fill: var(--tmux-bg); stroke: var(--tmux); }
+.panel { fill: none; stroke: var(--line); stroke-width: 1.25; stroke-dasharray: 5 5; }
+.t { fill: var(--fg); font-family: var(--sans); font-size: 13px; }
+.tb { font-weight: 600; }
+.tl { font-size: 15px; }
+.tm { font-family: var(--mono); font-size: 12px; }
+.ts { font-size: 11.5px; }
+.mut { fill: var(--muted); }
+.cap { fill: var(--muted); font-family: var(--sans); font-size: 11px; font-weight: 600; letter-spacing: .08em; }
+.halo { paint-order: stroke; stroke: var(--surface); stroke-width: 5px; stroke-linejoin: round; }
+.ln { fill: none; stroke: var(--fg); stroke-width: 1.5; }
+.ln-you { stroke: var(--you); }
+.ln-mail { stroke: var(--mail); }
+.ln-tmux { stroke: var(--tmux); }
+.ln-mut { stroke: var(--muted); }
+.dash { stroke-dasharray: 5 5; }
+.ah { fill: var(--fg); }
+.ah-you { fill: var(--you); }
+.ah-mail { fill: var(--mail); }
+.ah-tmux { fill: var(--tmux); }
+.ah-mut { fill: var(--muted); }
+.sep { stroke: var(--mail); stroke-opacity: .35; stroke-width: 1; }
+.bar { fill: var(--bar); }
+.barink { fill: var(--tmux-ink); font-family: var(--mono); font-size: 10.5px; }
+.x { stroke: var(--stop); stroke-width: 2.25; stroke-linecap: round; }
+.life { stroke: var(--line); stroke-width: 1.25; stroke-dasharray: 3 5; }
+.axis { stroke: var(--fg); stroke-width: 1.5; }
+.tick { stroke: var(--fg); stroke-width: 1.25; }
+.lead { fill: none; stroke: var(--muted); stroke-width: 1; }
+.dot-tmux { fill: var(--tmux); }
+.dot-you { fill: var(--surface); stroke: var(--you); stroke-width: 2; }
+.stopmark { fill: var(--stop); }
+</style>
+</head>
+<body>
+
+<main class="wrap">
+  <header>
+    <p class="eyebrow">teamflow</p>
+    <h1>How teamflow works</h1>
+    <p class="lede">Your agent session becomes the Delegator. It plans with you, then hands tasks to worker agents from any vendor. Each worker runs in its own tmux window, and every task and result passes through files in the repo's git directory.</p>
+    <ul class="legend" aria-label="Colors in the figures">
+      <li><span class="sw sw-you"></span>your agent session</li>
+      <li><span class="sw sw-mail"></span>the mailbox in <code>.git/teamflow/</code></li>
+      <li><span class="sw sw-tmux"></span>worker windows in tmux</li>
+    </ul>
+  </header>
+
+  <section>
+    <h2>Where everything runs</h2>
+    <p>Three places, and only files move between them, plus one short line typed into a worker's window.</p>
+    <figure>
+      <div class="scroll">
+        <svg viewBox="0 0 960 448" role="img" aria-label="The Delegator writes tasks to the mailbox in .git/teamflow and types a one-line pointer into a worker's tmux window. Workers read the task and write results to the mailbox, which the Delegator reads. Workers never type into the Delegator's session.">
+          <defs>
+            <marker id="f1-ay" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,1 L10,5 L0,9 z" class="ah-you"/></marker>
+            <marker id="f1-am" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,1 L10,5 L0,9 z" class="ah-mail"/></marker>
+            <marker id="f1-at" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,1 L10,5 L0,9 z" class="ah-tmux"/></marker>
+            <marker id="f1-ax" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,1 L10,5 L0,9 z" class="ah-mut"/></marker>
+          </defs>
+
+          <text class="cap" x="20" y="112">YOUR TERMINAL</text>
+          <text class="cap" x="370" y="112">THE REPO'S GIT DIRECTORY</text>
+          <text class="cap" x="680" y="28">TMUX SESSION tf-myapp-5fb01964</text>
+
+          <!-- Delegator -->
+          <rect class="b b-you" x="20" y="122" width="220" height="150" rx="8"/>
+          <text class="t tb tl" x="130" y="160" text-anchor="middle">Delegator</text>
+          <text class="t" x="130" y="186" text-anchor="middle">your Claude Code or Codex</text>
+          <text class="t" x="130" y="204" text-anchor="middle">session, outside tmux</text>
+          <text class="t tm mut" x="130" y="248" text-anchor="middle">teamflow task | pane</text>
+
+          <!-- Mailbox -->
+          <rect class="b b-mail" x="370" y="122" width="220" height="150" rx="8"/>
+          <text class="t tm tb" x="480" y="152" text-anchor="middle">.git/teamflow/</text>
+          <line class="sep" x1="386" y1="164" x2="574" y2="164"/>
+          <text class="t tm" x="390" y="186">T-0001</text><text class="t tm mut" x="458" y="186">done</text>
+          <text class="t tm" x="390" y="206">T-0002</text><text class="t tm mut" x="458" y="206">in-progress</text>
+          <text class="t tm" x="390" y="226">T-0003</text><text class="t tm mut" x="458" y="226">assigned</text>
+          <text class="t tm" x="390" y="254">note-queue/</text><text class="t mut ts" x="486" y="254">for notes</text>
+
+          <!-- tmux session -->
+          <rect class="b b-tmux" x="680" y="40" width="260" height="296" rx="8"/>
+          <rect class="b" x="696" y="54" width="228" height="48" rx="6"/>
+          <text class="t tm tb" x="712" y="74">researcher-1</text><text class="t mut ts" x="712" y="92">zai-code</text>
+          <rect class="b" x="696" y="112" width="228" height="48" rx="6"/>
+          <text class="t tm tb" x="712" y="132">reviewer-1</text><text class="t mut ts" x="712" y="150">claude</text>
+          <rect class="b" x="696" y="170" width="228" height="48" rx="6"/>
+          <text class="t tm tb" x="712" y="190">developer-l-1</text><text class="t mut ts" x="712" y="208">codex</text>
+          <rect class="b" x="696" y="228" width="228" height="48" rx="6"/>
+          <text class="t tm tb" x="712" y="248">notetaker</text><text class="t mut ts" x="712" y="266">claude</text>
+          <rect class="bar" x="688" y="294" width="244" height="28" rx="3"/>
+          <text class="barink" x="698" y="312">[tf-myapp] 0:researcher-1 1:…</text>
+
+          <!-- worktree -->
+          <rect class="b" x="680" y="372" width="260" height="62" rx="8"/>
+          <text class="t tm" x="696" y="396" style="font-size:11.5px">.teamflow-worktrees/developer-l-1</text>
+          <text class="t mut ts" x="696" y="418">branch teamflow/developer-l-1</text>
+          <path class="ln ln-tmux" d="M810,336 V368" marker-end="url(#f1-at)"/>
+          <text class="t mut ts" x="798" y="358" text-anchor="end">developers commit here</text>
+
+          <!-- send-to: the one typed line -->
+          <path class="ln ln-you" d="M160,122 V76 H692" marker-end="url(#f1-ay)"/>
+          <text class="t tm halo" x="410" y="67" text-anchor="middle">pane send-to</text>
+          <text class="t mut halo" x="410" y="94" text-anchor="middle">types a one-line pointer to the task</text>
+
+          <!-- Delegator and mailbox -->
+          <path class="ln ln-you" d="M240,160 H366" marker-end="url(#f1-ay)"/>
+          <text class="t tm halo" x="303" y="151" text-anchor="middle">task new</text>
+          <text class="t mut halo" x="303" y="178" text-anchor="middle">writes a task</text>
+          <path class="ln ln-mail" d="M370,236 H244" marker-end="url(#f1-am)"/>
+          <text class="t tm halo" x="305" y="227" text-anchor="middle">task inbox</text>
+          <text class="t mut halo" x="305" y="254" text-anchor="middle">reads results</text>
+
+          <!-- mailbox and workers -->
+          <path class="ln ln-mail" d="M590,170 H676" marker-end="url(#f1-am)"/>
+          <text class="t tm halo" x="635" y="161" text-anchor="middle">task.sh read</text>
+          <text class="t mut halo" x="635" y="188" text-anchor="middle">gets the task</text>
+          <path class="ln ln-tmux" d="M680,236 H594" marker-end="url(#f1-at)"/>
+          <text class="t tm halo" x="637" y="227" text-anchor="middle">task.sh done</text>
+          <text class="t mut halo" x="637" y="254" text-anchor="middle">saves result</text>
+
+          <!-- the path that does not exist -->
+          <path class="ln ln-mut dash" d="M680,300 H160 V277" marker-end="url(#f1-ax)"/>
+          <path class="x" d="M413,293 L427,307 M427,293 L413,307"/>
+          <text class="t mut halo" x="420" y="326" text-anchor="middle">workers never type into your session</text>
+        </svg>
+      </div>
+      <figcaption>The Delegator writes each task into the mailbox and types only a short pointer into the worker's window. The worker reads the task there and saves its result there. The Delegator collects results from the mailbox, so nothing ever arrives in your session as typed text, and a busy session is never interrupted.</figcaption>
+    </figure>
+  </section>
+
+  <section>
+    <h2>The life of a task</h2>
+    <p>A task's status lives in its mailbox record, so the Delegator never has to read a worker's screen to know where things stand.</p>
+    <figure>
+      <div class="scroll">
+        <svg viewBox="0 0 960 660" role="img" aria-label="Sequence of one task: the Delegator creates it (assigned) and sends a pointer, the worker takes it (in-progress), works, and marks it done. The Delegator reads the result, reviews and merges it, then releases it. The note queue hands it to the Notetaker, which writes notes and runs task noted, removing the record.">
+          <defs>
+            <marker id="f2-ay" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,1 L10,5 L0,9 z" class="ah-you"/></marker>
+            <marker id="f2-am" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,1 L10,5 L0,9 z" class="ah-mail"/></marker>
+            <marker id="f2-at" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,1 L10,5 L0,9 z" class="ah-tmux"/></marker>
+          </defs>
+
+          <!-- lanes -->
+          <line class="life" x1="120" y1="48" x2="120" y2="632"/>
+          <line class="life" x1="380" y1="48" x2="380" y2="632"/>
+          <line class="life" x1="640" y1="48" x2="640" y2="632"/>
+          <line class="life" x1="860" y1="48" x2="860" y2="632"/>
+          <rect class="b b-you" x="40" y="14" width="160" height="34" rx="6"/>
+          <text class="t tb" x="120" y="36" text-anchor="middle">Delegator</text>
+          <rect class="b b-mail" x="300" y="14" width="160" height="34" rx="6"/>
+          <text class="t tb" x="380" y="36" text-anchor="middle">Mailbox</text>
+          <rect class="b b-tmux" x="560" y="14" width="160" height="34" rx="6"/>
+          <text class="t tb" x="640" y="36" text-anchor="middle">Worker</text>
+          <rect class="b b-tmux" x="780" y="14" width="160" height="34" rx="6"/>
+          <text class="t tb" x="860" y="36" text-anchor="middle">Notetaker</text>
+
+          <!-- 1 -->
+          <path class="ln ln-you" d="M120,86 H376" marker-end="url(#f2-ay)"/>
+          <text class="t tm halo" x="250" y="77" text-anchor="middle">task new developer-l-1</text>
+          <text class="t mut halo" x="250" y="103" text-anchor="middle">status: assigned</text>
+          <!-- 2 -->
+          <path class="ln ln-you" d="M120,140 H636" marker-end="url(#f2-ay)"/>
+          <text class="t tm halo" x="380" y="131" text-anchor="middle">pane send-to developer-l-1</text>
+          <text class="t mut halo" x="380" y="157" text-anchor="middle">a one-line pointer to the task</text>
+          <!-- 3 -->
+          <path class="ln ln-tmux" d="M640,194 H384" marker-end="url(#f2-at)"/>
+          <text class="t tm halo" x="510" y="185" text-anchor="middle">task.sh take T-0001</text>
+          <text class="t mut halo" x="510" y="211" text-anchor="middle">status: in-progress</text>
+          <!-- 4 work -->
+          <rect class="b b-tmux" x="632" y="222" width="16" height="50" rx="2"/>
+          <text class="t" x="660" y="242">does the work</text>
+          <text class="t tm mut" x="660" y="260" style="font-size:11.5px">commits on teamflow/&lt;id&gt;</text>
+          <!-- 5 -->
+          <path class="ln ln-tmux" d="M640,300 H384" marker-end="url(#f2-at)"/>
+          <text class="t tm halo" x="510" y="291" text-anchor="middle">task.sh done T-0001</text>
+          <text class="t mut halo" x="510" y="317" text-anchor="middle">status: done, result saved</text>
+          <!-- 6 -->
+          <path class="ln ln-mail" d="M380,354 H124" marker-end="url(#f2-am)"/>
+          <text class="t tm halo" x="250" y="345" text-anchor="middle">task inbox delegator</text>
+          <text class="t mut halo" x="250" y="371" text-anchor="middle">reads the result</text>
+          <!-- 7 review -->
+          <rect class="b b-you" x="112" y="384" width="16" height="56" rx="2"/>
+          <text class="t" x="140" y="406">reviews, or asks the Reviewer,</text>
+          <text class="t" x="140" y="424">then merges into main</text>
+          <!-- 8 -->
+          <path class="ln ln-you" d="M120,470 H376" marker-end="url(#f2-ay)"/>
+          <text class="t tm halo" x="250" y="461" text-anchor="middle">task release T-0001 &lt;commit&gt;</text>
+          <text class="t mut halo" x="250" y="487" text-anchor="middle">queued for notes</text>
+          <!-- 9 -->
+          <path class="ln ln-mail" d="M380,524 H856" marker-end="url(#f2-am)"/>
+          <text class="t tm halo" x="620" y="515" text-anchor="middle">note-queue</text>
+          <text class="t mut halo" x="620" y="541" text-anchor="middle">one released task at a time</text>
+          <!-- 10 notes -->
+          <rect class="b b-tmux" x="852" y="552" width="16" height="46" rx="2"/>
+          <text class="t" x="840" y="572" text-anchor="end">writes notes in</text>
+          <text class="t tm mut" x="840" y="590" text-anchor="end" style="font-size:11.5px">docs/notes/&lt;type&gt;s/</text>
+          <!-- 11 -->
+          <path class="ln ln-tmux" d="M860,622 H384" marker-end="url(#f2-at)"/>
+          <text class="t tm halo" x="620" y="613" text-anchor="middle">task noted T-0001</text>
+          <text class="t mut halo" x="620" y="644" text-anchor="middle">task record removed</text>
+        </svg>
+      </div>
+      <figcaption>One task from assignment to notes. Its status moves from <code>assigned</code> to <code>in-progress</code> to <code>done</code>. After review and integration, <code>task release</code> queues it for the Notetaker, which takes one released task at a time and removes the record with <code>task noted</code>. Without a Notetaker, released tasks wait in the queue for one to join.</figcaption>
+    </figure>
+  </section>
+
+  <section>
+    <h2>What lives where</h2>
+    <p>teamflow installs once per machine. A project keeps a few small files and borrows the rest from the installed version.</p>
+    <figure>
+      <div class="scroll">
+        <svg viewBox="0 0 960 372" role="img" aria-label="Once per machine: ./install copies your clone to ~/.local/share/teamflow/version, which ~/.local/bin/teamflow runs through the current link. teamflow setup writes commands.conf and your catalog. In each project, teamflow init copies the catalog into teamflow.conf, and stub skills load their full text from the installed version with teamflow guide.">
+          <defs>
+            <marker id="f3-a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,1 L10,5 L0,9 z" class="ah"/></marker>
+          </defs>
+
+          <text class="cap" x="20" y="28">ONCE PER MACHINE</text>
+          <text class="cap" x="640" y="28">EACH PROJECT</text>
+          <rect class="panel" x="20" y="40" width="540" height="318" rx="10"/>
+          <rect class="panel" x="640" y="40" width="300" height="318" rx="10"/>
+
+          <!-- machine -->
+          <rect class="b" x="40" y="64" width="140" height="68" rx="6"/>
+          <text class="t tm" x="110" y="94" text-anchor="middle">~/code/teamflow</text>
+          <text class="t mut ts" x="110" y="114" text-anchor="middle">your clone</text>
+          <path class="ln" d="M180,98 H256" marker-end="url(#f3-a)"/>
+          <text class="t tm halo" x="218" y="89" text-anchor="middle">./install</text>
+
+          <rect class="b" x="260" y="64" width="280" height="68" rx="6"/>
+          <text class="t tm" x="400" y="88" text-anchor="middle">~/.local/share/teamflow/&lt;version&gt;/</text>
+          <text class="t mut ts" x="400" y="106" text-anchor="middle">scripts, roles, templates,</text>
+          <text class="t mut ts" x="400" y="123" text-anchor="middle">and the full skill text</text>
+
+          <rect class="b" x="260" y="168" width="280" height="52" rx="6"/>
+          <text class="t tm" x="400" y="190" text-anchor="middle">~/.local/bin/teamflow</text>
+          <text class="t mut ts" x="400" y="208" text-anchor="middle">the command on your PATH</text>
+          <path class="ln" d="M400,168 V136" marker-end="url(#f3-a)"/>
+          <text class="t mut ts" x="410" y="156">via the current link</text>
+
+          <text class="t mut ts" x="290" y="250" text-anchor="middle">written by teamflow setup</text>
+          <rect class="b" x="40" y="262" width="230" height="60" rx="6"/>
+          <text class="t tm" x="155" y="286" text-anchor="middle">commands.conf</text>
+          <text class="t mut ts" x="155" y="306" text-anchor="middle">your agent commands</text>
+          <rect class="b" x="290" y="262" width="250" height="60" rx="6"/>
+          <text class="t tm" x="415" y="286" text-anchor="middle">~/.config/teamflow/teamflow.conf</text>
+          <text class="t mut ts" x="415" y="306" text-anchor="middle">your worker catalog</text>
+
+          <!-- project -->
+          <rect class="b" x="660" y="64" width="260" height="68" rx="6"/>
+          <text class="t tm" x="790" y="86" text-anchor="middle">.claude/skills/teamflow/</text>
+          <text class="t tm" x="790" y="104" text-anchor="middle">.agents/skills/teamflow/</text>
+          <text class="t mut ts" x="790" y="123" text-anchor="middle">stub skills</text>
+
+          <rect class="b" x="660" y="168" width="260" height="52" rx="6"/>
+          <text class="t tm" x="790" y="190" text-anchor="middle">AGENTS.md</text>
+          <text class="t mut ts" x="790" y="208" text-anchor="middle">a managed section</text>
+
+          <rect class="b" x="660" y="262" width="260" height="60" rx="6"/>
+          <text class="t tm" x="790" y="286" text-anchor="middle">teamflow.conf</text>
+          <text class="t mut ts" x="790" y="306" text-anchor="middle">the project's worker catalog</text>
+          <text class="t mut ts" x="790" y="344" text-anchor="middle">plus .agents/roles/ only if customized</text>
+
+          <!-- links -->
+          <path class="ln" d="M660,98 H544" marker-end="url(#f3-a)"/>
+          <text class="t tm halo" x="600" y="89" text-anchor="middle">teamflow guide</text>
+          <text class="t mut ts halo" x="600" y="115" text-anchor="middle">loads full text</text>
+          <path class="ln" d="M540,292 H656" marker-end="url(#f3-a)"/>
+          <text class="t tm halo" x="598" y="283" text-anchor="middle">teamflow init</text>
+          <text class="t mut ts halo" x="598" y="309" text-anchor="middle">copies it</text>
+        </svg>
+      </div>
+      <figcaption>A project holds its config, stub skills, and the <code>AGENTS.md</code> section. Each stub runs <code>teamflow guide</code> to load the full instructions from the installed version, so an update reaches every project without changing its files. <code>teamflow init</code> starts a new project's config from your catalog.</figcaption>
+    </figure>
+  </section>
+
+  <section>
+    <h2>When you close your agent</h2>
+    <p>A watcher in the background of the tmux server notices when the Delegator's session ends, so workers don't keep running for long.</p>
+    <figure>
+      <div class="scroll">
+        <svg viewBox="0 0 960 200" role="img" aria-label="Timeline after the Delegator's session ends: the first trim at one minute stops idle workers, trims repeat every minute until ten minutes, then hourly, and at two hours the team stops.">
+          <!-- axis, with a break after 10 minutes -->
+          <line class="axis" x1="60" y1="120" x2="490" y2="120"/>
+          <line class="axis" x1="522" y1="120" x2="900" y2="120"/>
+          <path class="ln" d="M494,128 L502,112 M508,128 L516,112"/>
+
+          <line class="tick" x1="60" y1="114" x2="60" y2="126"/>
+          <line class="tick" x1="480" y1="114" x2="480" y2="126"/>
+          <line class="tick" x1="732" y1="114" x2="732" y2="126"/>
+          <text class="t tm mut" x="60" y="144" text-anchor="middle">0</text>
+          <text class="t tm mut" x="102" y="144" text-anchor="middle">1 min</text>
+          <text class="t tm mut" x="480" y="144" text-anchor="middle">10 min</text>
+          <text class="t tm mut" x="732" y="144" text-anchor="middle">1 h 10 min</text>
+          <text class="t tm mut" x="900" y="144" text-anchor="middle">2 h</text>
+
+          <!-- trims every minute -->
+          <circle class="dot-tmux" cx="102" cy="120" r="4.5"/>
+          <circle class="dot-tmux" cx="144" cy="120" r="4.5"/>
+          <circle class="dot-tmux" cx="186" cy="120" r="4.5"/>
+          <circle class="dot-tmux" cx="228" cy="120" r="4.5"/>
+          <circle class="dot-tmux" cx="270" cy="120" r="4.5"/>
+          <circle class="dot-tmux" cx="312" cy="120" r="4.5"/>
+          <circle class="dot-tmux" cx="354" cy="120" r="4.5"/>
+          <circle class="dot-tmux" cx="396" cy="120" r="4.5"/>
+          <circle class="dot-tmux" cx="438" cy="120" r="4.5"/>
+          <circle class="dot-tmux" cx="480" cy="120" r="4.5"/>
+          <circle class="dot-tmux" cx="732" cy="120" r="4.5"/>
+          <circle class="dot-you" cx="60" cy="120" r="6"/>
+          <rect class="stopmark" x="894" y="114" width="12" height="12" rx="1"/>
+
+          <!-- events -->
+          <line class="lead" x1="60" y1="66" x2="60" y2="112"/>
+          <text class="t" x="60" y="60">Delegator's session ends</text>
+          <line class="lead" x1="102" y1="94" x2="102" y2="114"/>
+          <text class="t" x="102" y="88">first trim: idle workers stop</text>
+          <line class="lead" x1="732" y1="94" x2="732" y2="114"/>
+          <text class="t" x="732" y="88" text-anchor="middle">hourly trim</text>
+          <line class="lead" x1="900" y1="66" x2="900" y2="112"/>
+          <text class="t" x="900" y="60" text-anchor="end">2 h: the team stops</text>
+
+          <!-- spans -->
+          <path class="lead" d="M102,158 V164 H480 V158"/>
+          <text class="t mut ts" x="291" y="182" text-anchor="middle">trims every minute</text>
+          <path class="lead" d="M522,158 V164 H900 V158"/>
+          <text class="t mut ts" x="711" y="182" text-anchor="middle">then every hour (time axis compressed)</text>
+        </svg>
+      </div>
+      <figcaption>Each trim stops idle workers, and once every worker is idle the team stops. A worker that finishes a task wakes the watcher early, so it goes at once. At two hours the team stops even if a worker is still busy. Unmerged worktrees are always kept, and a stop note tells your next session what was unfinished. Running any teamflow command from a new agent session cancels the stop.</figcaption>
+    </figure>
+  </section>
+
+  <footer>Drawn from the teamflow source on 2026-10-03. Repository: <a href="https://github.com/jaechoidev/teamflow">github.com/jaechoidev/teamflow</a></footer>
+</main>
+</body>
+</html>
