@@ -233,10 +233,24 @@ def write_script(name, kind, definition):
     body = f'{definition} "$@"\n' if kind == "alias" else f'{definition}\n{name} "$@"\n'
     path = data_dir() / "commands" / name
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(f"#!{shell}\n# Copied by teamflow setup from the {kind} {name} in your shell. "
-                    f"teamflow rewrites it when the {kind} changes.\n{body}")
-    path.chmod(0o755)
+    path.parent.chmod(0o700)
+    # A definition may hold a key written into it, so only the user may read the copy.
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o700)
+    os.fchmod(fd, 0o700)
+    with os.fdopen(fd, "w") as f:
+        f.write(f"#!{shell}\n# Copied by teamflow setup from the {kind} {name} in your shell. "
+                f"teamflow rewrites it when the {kind} changes.\n{body}")
     return path
+
+
+def make_copies_private(copied):
+    """Copies written by teamflow 0.2.0 were readable by every account."""
+    paths = [data_dir() / "commands"] + [Path(e["script"]).expanduser() for e in copied.values() if e.get("script")]
+    loose = [p for p in paths if p.exists() and p.stat().st_mode & 0o077]
+    for path in loose:
+        path.chmod(0o700)
+    if loose:
+        say(f"made the copied commands in {data_dir() / 'commands'} readable only by you")
 
 
 def register_definition(name, kind, definition, interactive_version):
@@ -308,6 +322,8 @@ def refresh(cheap=False, report=False):
     copied = {n: e for n, e in entries.items() if e.get("kind") in ("alias", "function")}
     if not copied:
         return 0
+    if not report:
+        make_copies_private(copied)
     current_hash = startup_hash()
     if cheap and all(e.get("startup_hash") == current_hash for e in copied.values()):
         return 0
