@@ -101,4 +101,4 @@ This changes the config format, so it ships as 0.2.0, with a `CHANGES.md` entry 
 
 - Flavors for more agent CLIs, such as `opencode`, `cursor-agent`, `aider`, and `gemini`
 - Installing the agent CLIs themselves
-- A `curl ... | sh` installer, which needs a public repository
+- A `curl ... | sh` installer

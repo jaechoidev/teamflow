@@ -10,6 +10,12 @@ a user notices and any step a project needs when it moves to that version.
   (`YYYY-MM-DD-HHMM`), so a folder lists notes in the order they were
   written. `teamflow note new <type> "<title>"` creates a note from its
   template, and the Notetaker creates every note with it.
+- Copies of aliases and functions under `~/.local/share/teamflow/commands/`
+  are readable only by you, since a definition may hold a key. Copies that
+  0.2.0 made readable by every account are fixed at the next install,
+  update, or team start.
+- The README's Permissions section says what workers may do without asking.
+- teamflow is MIT licensed.
 
 Moving a project to 0.3.0: notes written by earlier versions stay flat in
 `docs/notes/` until they are moved. A running Notetaker keeps the old naming

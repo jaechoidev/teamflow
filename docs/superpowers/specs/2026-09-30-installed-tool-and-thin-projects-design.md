@@ -8,7 +8,7 @@ Today `init` copies the launcher, libraries, roles, templates, and full skills i
 
 ## Where the command lives
 
-The source of teamflow is its git repository, `https://github.com/jaechoidev/teamflow` (private for now). Installs always come from a git checkout, so the version is known. The first install runs the launcher from that checkout:
+The source of teamflow is its git repository, `https://github.com/jaechoidev/teamflow`. Installs always come from a git checkout, so the version is known. The first install runs the launcher from that checkout:
 
 ```
 git clone https://github.com/jaechoidev/teamflow ~/code/teamflow

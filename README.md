@@ -12,7 +12,8 @@ so nothing is ever typed into your session.
 
 Compared with built-in subagents, workers can come from any vendor, persist,
 and stay visible. The cost is weight: teamflow needs tmux, each vendor's CLI
-and login, and results arrive asynchronously.
+and login, and results arrive asynchronously. Workers act without asking you
+first, so read Permissions before you start a team.
 
 ## Install
 
@@ -66,6 +67,29 @@ functions, and, inside a project, the commands its config uses. A running
 team keeps the version it started with. An update applies at the team's next
 start. Earlier versions stay in `~/.local/share/teamflow/`, so you can point
 `current` back at one.
+
+This repository runs on teamflow too. Its `teamflow.conf` names `zai-code`,
+a wrapper on the author's machine, for two worker types, so on yours
+`teamflow doctor` reports it missing. Point those types at one of your
+commands, and keep that change out of commits.
+
+## Permissions
+
+Workers do their tasks without asking you first:
+
+- Codex workers start with `--dangerously-bypass-approvals-and-sandbox`: no
+  approval prompts and no sandbox. They can run any command and change any
+  file your account can.
+- Claude Code workers, wrappers included, follow your own Claude Code
+  permission settings (`~/.claude/settings.json` and the project's
+  `.claude/settings.json`). teamflow passes them no permission flags. A
+  worker that needs your approval waits in its window until you answer
+  there.
+
+Developers write in their own git worktrees, and the Delegator integrates
+their commits after review. That keeps work apart, but it is not a security
+boundary. Run a team only in repositories and on machines where you would
+let these agents work unattended.
 
 ## Quickstart
 
@@ -167,7 +191,9 @@ Worker windows start their command in a non-interactive shell, which has no
 aliases or functions. So `teamflow setup` copies each alias or function it
 uses into a script under `~/.local/share/teamflow/commands/` and records it in
 `~/.local/share/teamflow/commands.conf`, the commands on this machine. Your
-shell startup files stay untouched. Setup checks that the copy reports the
+shell startup files stay untouched. If a key is written into an alias or
+function, its copy holds the key too, so only your account can read the
+copies. Setup checks that the copy reports the
 same `--version`. When it does not, that command's workers start through your
 interactive shell, which is slower and loads your whole startup files. The
 copies follow your definitions: `teamflow update` and `install` compare every
@@ -367,8 +393,9 @@ skills reach the agent as stubs in the project (see What a project holds).
   `git rev-parse --path-format=absolute`, introduced in Git 2.31.0, to
   locate the shared git dir that hosts the mailbox)
 - the agent CLIs your catalog uses, logged in: `claude` (Claude Code),
-  `codex`, or your own wrappers of them. Keys never live in this repo or in
-  teamflow's files.
+  `codex`, or your own wrappers of them. Keys never live in this repo.
+  teamflow's own files hold one only when an alias or function you
+  register has it written in (see Commands).
 
 ## Daily use
 
@@ -608,3 +635,7 @@ still wins):
   attributed to the default config. Codex workers are lightly tested: id
   discovery goes by working directory, so two Codex workers that share a
   directory could race it.
+
+## License
+
+MIT. See [LICENSE](LICENSE).

@@ -2,7 +2,7 @@
 # teamflow - cross-vendor subagents for any coding agent, in tmux.
 #
 # Install (once per machine, from a clone of https://github.com/jaechoidev/teamflow):
-#   scripts/teamflow install [--dev]  copy this checkout to
+#   ./install [--dev]             copy this checkout to
 #                                 ~/.local/share/teamflow/<version> and link
 #                                 ~/.local/bin/teamflow to it. --dev runs the
 #                                 checkout itself, for developing teamflow
@@ -66,8 +66,9 @@
 # - The installed tool holds the code, default roles, templates, and full
 #   skill text. A project holds only teamflow.conf, stub skills, the AGENTS.md
 #   section, and roles it customized. A running team keeps the exact version
-#   it started with. API keys never appear here: z.ai types source the env
-#   file named in teamflow.conf ([workspace] zai_env).
+#   it started with. API keys never appear here: a provider's key stays in
+#   the user's own command (cli = <command>). The deprecated cli = zai
+#   sources the env file named in teamflow.conf ([workspace] zai_env).
 # - Model availability: binary presence is checked always; whether a MODEL id
 #   actually works for your account is only knowable live — use
 #   --check-models. Missing configuration is reported, never silently
@@ -1281,7 +1282,7 @@ cmd_workers() { # $1 config argument $2 action $3 value $4 save (1|0)
 
 cmd_install() { # $1 dev (1|0) $2 bin dir
   git -C "$TOOL_HOME" rev-parse --git-dir >/dev/null 2>&1 \
-    || die "install runs from a teamflow checkout, and this is an installed copy ($TOOL_HOME). Use teamflow update, or run scripts/teamflow install in a clone of https://github.com/jaechoidev/teamflow"
+    || die "install runs from a teamflow checkout, and this is an installed copy ($TOOL_HOME). Use teamflow update, or run ./install in a clone of https://github.com/jaechoidev/teamflow"
   python3 "$TOOL_HOME/scripts/teamflow_scaffold.py" install-tool "$TOOL_HOME" "$TEAMFLOW_DATA" "$2" "$1" || exit 1
   offer_path_line "$2"
   local installed="$TEAMFLOW_DATA/current/scripts/teamflow"
@@ -1320,9 +1321,9 @@ offer_path_line() { # $1 bin dir: make sure new shells find the teamflow command
 cmd_update() { # pull the recorded checkout and install from it
   local source dev=0
   source="$(head -1 "$TEAMFLOW_DATA/source" 2>/dev/null)"
-  [ -n "$source" ] && [ -d "$source" ] || die "no recorded checkout to update from. Run scripts/teamflow install in a clone of https://github.com/jaechoidev/teamflow"
+  [ -n "$source" ] && [ -d "$source" ] || die "no recorded checkout to update from. Run ./install in a clone of https://github.com/jaechoidev/teamflow"
   path_eq "$(cd "$TEAMFLOW_DATA/current" 2>/dev/null && pwd -P)" "$source" && dev=1
-  git -C "$source" pull --ff-only || die "git pull failed in $source. Update it by hand, then run: $source/scripts/teamflow install"
+  git -C "$source" pull --ff-only || die "git pull failed in $source. Update it by hand, then run: $source/install"
   bash "$source/scripts/teamflow" install $([ "$dev" = 1 ] && echo --dev)
 }
 
@@ -1365,7 +1366,7 @@ cmd_doctor() {
   if command -v teamflow >/dev/null 2>&1; then
     ok "teamflow on PATH: $(command -v teamflow)"
   else
-    miss "teamflow on PATH: run scripts/teamflow install from a teamflow checkout, and make sure its bin directory is on PATH"
+    miss "teamflow on PATH: run ./install in a teamflow checkout, and make sure its bin directory is on PATH"
   fi
   if root="$(git rev-parse --show-toplevel 2>/dev/null)"; then
     root="$(team_root)"
