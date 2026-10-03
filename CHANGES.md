@@ -3,7 +3,9 @@
 Newest first. Each version is a git tag `vX.Y.Z`. An entry lists the changes
 a user notices and any step a project needs when it moves to that version.
 
-## 0.3.0 (unreleased)
+## 0.3.0 (2026-10-03)
+
+The first public version.
 
 - Project notes have a folder per type, such as `docs/notes/decisions/`,
   and each file name starts with the note's creation time
@@ -16,6 +18,7 @@ a user notices and any step a project needs when it moves to that version.
   update, or team start.
 - The README's Permissions section says what workers may do without asking.
 - teamflow is MIT licensed.
+- `docs/how-it-works.html` shows how teamflow works in four diagrams.
 
 Moving a project to 0.3.0: notes written by earlier versions stay flat in
 `docs/notes/` until they are moved. A running Notetaker keeps the old naming
