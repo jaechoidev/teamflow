@@ -313,8 +313,10 @@ def live_session(record):
     name, created = values.get("SESSION", ""), values.get("CREATED", "")
     if not name:
         return ""
+    # The record names its tmux server. Older records ran on the default one.
+    sock = values.get("SOCKET") or "default"
     try:
-        listing = subprocess.run(["tmux", "list-sessions", "-F", "#{session_created} #{session_name}"],
+        listing = subprocess.run(["tmux", "-L", sock, "list-sessions", "-F", "#{session_created} #{session_name}"],
                                  capture_output=True, text=True).stdout
     except FileNotFoundError:
         return ""

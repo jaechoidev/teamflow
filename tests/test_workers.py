@@ -11,11 +11,32 @@ import unittest
 SOURCE = Path(__file__).resolve().parents[1]
 
 
+def private_tmux(test):
+    """Every tmux server a test starts, the default one included, lives in a
+    private directory. Cleanup stops those servers and nothing else."""
+    tmux_dir = Path(tempfile.mkdtemp(prefix="tft-", dir="/tmp"))  # short: socket paths have a length limit
+    test.addCleanup(shutil.rmtree, tmux_dir, ignore_errors=True)
+    test.addCleanup(kill_servers, tmux_dir)
+    return tmux_dir
+
+
+def kill_servers(tmux_dir):
+    for socket in tmux_dir.glob("tmux-*/*"):
+        subprocess.run(["tmux", "-S", str(socket), "kill-server"], capture_output=True)
+
+
+def socket_of(root):
+    """The team's tmux server, from its launch record."""
+    record = dict(line.split("=", 1) for line in (root / ".git/teamflow/active").read_text().splitlines() if "=" in line)
+    return record["SOCKET"]
+
+
 class WorkersTest(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name)
+        self.tmux_dir = private_tmux(self)
         subprocess.run(["git", "init", "-q", str(self.root)], check=True)
         (self.root / "scripts").mkdir()
         for name in ("teamflow", "teamflow_workers.py", "teamflow_scaffold.py", "teamflow_setup.py"):
@@ -37,9 +58,15 @@ class WorkersTest(unittest.TestCase):
     def teamflow(self, *args, env=None):
         # The machine's command registry and catalog stay out of the tests.
         env = {**(env or os.environ), "XDG_DATA_HOME": str(self.root / ".xdg-data"),
-               "XDG_CONFIG_HOME": str(self.root / ".xdg-config")}
+               "XDG_CONFIG_HOME": str(self.root / ".xdg-config"), "TMUX_TMPDIR": str(self.tmux_dir)}
+        env.pop("TMUX", None)
         return subprocess.run(["bash", "scripts/teamflow", *args], cwd=self.root,
                               env=env, text=True, capture_output=True)
+
+    def tmux(self, *args):
+        env = {**os.environ, "TMUX_TMPDIR": str(self.tmux_dir)}
+        env.pop("TMUX", None)
+        return subprocess.check_output(["tmux", "-L", socket_of(self.root), *args], text=True, env=env)
 
     def test_add_remove_and_unfinished_task_guard(self):
         config = (self.root / "teamflow.conf").read_text()
@@ -84,7 +111,7 @@ class WorkersTest(unittest.TestCase):
         stubs = self.root / "stubs"
         stubs.mkdir()
         stub = stubs / "claude"
-        stub.write_text("#!/bin/sh\nsleep 60\n")
+        stub.write_text("#!/bin/sh\n[ \"$1\" = --help ] && exit 0\nsleep 60\n")
         stub.chmod(0o755)
         env = {**os.environ, "PATH": str(stubs) + os.pathsep + os.environ["PATH"]}
         registry = self.root / ".git/teamflow/panes.tsv"
@@ -102,7 +129,7 @@ class WorkersTest(unittest.TestCase):
             self.assertEqual(live["researcher-1"], original["researcher-1"])
             self.assertEqual(live["researcher-2"], original["researcher-2"])
             self.assertIn("researcher-3", live)
-            windows = subprocess.check_output(["tmux", "list-windows", "-t", "=" + start.stdout.strip(), "-F", "#{window_name}"], text=True).splitlines()
+            windows = self.tmux("list-windows", "-t", "=" + start.stdout.strip(), "-F", "#{window_name}").splitlines()
             self.assertEqual(windows, ["researcher-1", "researcher-2", "notetaker", "researcher-3"])
             task = self.root / ".git/teamflow/tasks/T-0001"
             task.mkdir(parents=True)
@@ -115,15 +142,15 @@ class WorkersTest(unittest.TestCase):
             removed = self.teamflow("workers", "remove", "researcher-2", env=env)
             self.assertEqual(removed.returncode, 0, removed.stderr)
             self.assertNotIn("researcher-2", panes())
-            actual = subprocess.check_output(["tmux", "list-panes", "-s", "-t", "=" + start.stdout.strip(), "-F", "#{pane_id}"], text=True)
+            actual = self.tmux("list-panes", "-s", "-t", "=" + start.stdout.strip(), "-F", "#{pane_id}")
             self.assertNotIn(original["researcher-2"], actual.splitlines())
             before = (self.root / "teamflow.conf").read_bytes()
-            stub.write_text("#!/bin/sh\nexit 1\n")
+            stub.write_text("#!/bin/sh\n[ \"$1\" = --help ] && exit 0\nexit 1\n")
             failed = self.teamflow("workers", "add", "researcher", env=env)
             self.assertNotEqual(failed.returncode, 0)
             self.assertEqual(before, (self.root / "teamflow.conf").read_bytes())
             self.assertEqual(panes(), {"researcher-1": original["researcher-1"], "researcher-3": live["researcher-3"], "notetaker": original["notetaker"]})
-            stub.write_text("#!/bin/sh\nsleep 60\n")
+            stub.write_text("#!/bin/sh\n[ \"$1\" = --help ] && exit 0\nsleep 60\n")
             self.assertEqual(before, (self.root / "teamflow.conf").read_bytes())
             saved = self.teamflow("workers", "add", "researcher", "--save", env=env)
             self.assertEqual(saved.returncode, 0, saved.stderr)
@@ -135,7 +162,7 @@ class WorkersTest(unittest.TestCase):
             self.assertIn("researcher-2", back.stdout)
             self.assertIn("researcher-2", panes())
             dead = panes()["researcher-3"]
-            subprocess.run(["tmux", "respawn-pane", "-k", "-t", dead, "true"], check=True)
+            self.tmux("respawn-pane", "-k", "-t", dead, "true")
             synced = self.teamflow("workers", "sync", env=env)
             self.assertEqual(synced.returncode, 0, synced.stderr)
             self.assertEqual(set(panes()), {"researcher-1", "researcher-2", "researcher-3", "researcher-4", "notetaker"})
@@ -155,7 +182,7 @@ class WorkersTest(unittest.TestCase):
         stubs = self.root / "stubs"
         stubs.mkdir()
         stub = stubs / "claude"
-        stub.write_text("#!/bin/sh\nsleep 30\n")
+        stub.write_text("#!/bin/sh\n[ \"$1\" = --help ] && exit 0\nsleep 30\n")
         stub.chmod(0o755)
         env = os.environ.copy()
         env["PATH"] = str(stubs) + os.pathsep + env["PATH"]
@@ -164,8 +191,8 @@ class WorkersTest(unittest.TestCase):
             self.assertEqual(launched.returncode, 0, launched.stderr)
             verified = self.teamflow("--verify", env=env)
             self.assertEqual(verified.stdout.count("pane %"), 15, verified.stdout)
-            windows = subprocess.check_output(["tmux", "list-windows", "-t", "=" + launched.stdout.strip(),
-                                               "-F", "#{window_name} #{window_panes}"], text=True)
+            windows = self.tmux("list-windows", "-t", "=" + launched.stdout.strip(),
+                                "-F", "#{window_name} #{window_panes}")
             self.assertEqual(windows.splitlines(), [f"researcher-{i} 1" for i in range(1, 16)])
             registry = self.root / ".git/teamflow/panes.tsv"
             original = dict(line.split("\t") for line in registry.read_text().splitlines())

@@ -77,6 +77,10 @@
 #   not to a config. <mailbox>/active records the running session, the
 #   config that started it, and the install that runs it. Another config is
 #   refused until --kill.
+# - One tmux server per project: every tmux call names the team's own
+#   server, tmux -L <socket> (.agents/lib/tmux-server.sh), so no other
+#   project shares its pane IDs or its global environment. A worker starts
+#   without the Claude Code session variables of the agent that launched it.
 set -u
 
 # TOOL_HOME is the installed version directory (or the checkout, for a
@@ -96,6 +100,10 @@ MAILBOX_NAME=teamflow # the mailbox lives at <git-common-dir>/teamflow
 
 die() { echo "teamflow: $*" >&2; exit 1; }
 say() { echo "teamflow: $*" >&2; }
+
+# The team's own tmux server and the variables workers never inherit.
+# shellcheck source=../.agents/lib/tmux-server.sh
+. "$TOOL_LIB/tmux-server.sh" || die "$TOOL_LIB/tmux-server.sh is missing. Reinstall teamflow"
 
 usage() { # the header comment, up to the design notes
   awk 'NR == 1 { next } /^# Design notes/ { exit } { sub(/^# ?/, ""); print }' "$0"
@@ -223,12 +231,46 @@ ensure_exclude() { # $1 common-dir  $2 pattern — keep runtime state out of git
 # environment, or extend this list.
 CLAUDE_ROUTING_VARS="ANTHROPIC_BASE_URL ANTHROPIC_AUTH_TOKEN ANTHROPIC_API_KEY ANTHROPIC_MODEL ANTHROPIC_SMALL_FAST_MODEL ANTHROPIC_DEFAULT_HAIKU_MODEL ANTHROPIC_DEFAULT_SONNET_MODEL ANTHROPIC_DEFAULT_OPUS_MODEL ANTHROPIC_CUSTOM_HEADERS API_TIMEOUT_MS"
 
-worker_window() { # $1 pane id: a worker's window keeps its ID as its name,
+# TF_SOCKET names the tmux server the current command acts on: the team's
+# own server, or the shared default server for a team an older teamflow
+# started there. tmx is tmux on that server. No call ever leaves it implicit,
+# because a bare tmux inside tmux talks to whichever server $TMUX names.
+TF_SOCKET=""
+tmx() {
+  [ -n "$TF_SOCKET" ] || die "internal error: no tmux server chosen"
+  tmux -L "$TF_SOCKET" "$@"
+}
+
+attach_hint() { # $1 target: the command that opens it, for a terminal outside tmux
+  printf 'tmux -L %s attach -t %s' "$(shell_quote_word "$TF_SOCKET")" "$(shell_quote_word "$1")"
+}
+
+shell_quote_word() { # $1 -> as is when plain, else single-quoted
+  case "$1" in *[!A-Za-z0-9_./:%=@+-]*|"") shell_quote "$1" ;; *) printf '%s' "$1" ;; esac
+}
+
+server_session_env() { # the variables a fresh team server must not keep: names on stdout
+  tmx show-environment -g 2>/dev/null | tf_session_vars
+  printf '%s\n' $TEAMFLOW_SERVER_ENV_EXTRA
+}
+
+scrub_server_env() { # drop session-identity variables from the team server's global environment
+  local v
+  for v in $(server_session_env); do
+    tmx set-environment -g -u "$v" 2>/dev/null
+  done
+  return 0
+}
+
+worker_window() { # $1 pane id $2 worker: a worker's window keeps its ID as its name,
   # stays visible after the CLI exits, and flags new output in the status bar.
-  tmux set-window-option -t "$1" remain-on-exit on >/dev/null
-  tmux set-window-option -t "$1" automatic-rename off >/dev/null
-  tmux set-window-option -t "$1" allow-rename off >/dev/null
-  tmux set-window-option -t "$1" monitor-activity on >/dev/null
+  # The pane option @teamflow_worker names its worker, wherever the pane
+  # moves (teamflow view), so pane.sh can check whose pane it types into.
+  tmx set-window-option -t "$1" remain-on-exit on >/dev/null
+  tmx set-window-option -t "$1" automatic-rename off >/dev/null
+  tmx set-window-option -t "$1" allow-rename off >/dev/null
+  tmx set-window-option -t "$1" monitor-activity on >/dev/null
+  [ -z "${2:-}" ] || tmx set-option -p -t "$1" @teamflow_worker "$2" >/dev/null
 }
 
 role_path() { # $1 root $2 role file (relative) -> the project's override, else the installed default
@@ -255,7 +297,8 @@ start_watcher() { # $1 mailbox $2 root $3 session: one watcher per team (see .ag
      && kill -0 "$pid" 2>/dev/null && ps -o command= -p "$pid" 2>/dev/null | grep -q 'watch\.sh'; then
     return 0
   fi
-  socket="$(tmux display-message -p -t "=$sess:" '#{socket_path}')" || return 0
+  # The watcher talks to this team's server by its socket path.
+  socket="$(tmx display-message -p -t "=$sess:" '#{socket_path}')" || return 0
   cmd="bash"
   # TEAMFLOW_WATCH_GRACE, _CAP, _EVERY, _FAST, and _SLOW (seconds) exist for tests only.
   for arg in "$TOOL_LIB/watch.sh" "$socket" "$sess" "$(session_created "$sess")" "$mailbox" \
@@ -265,7 +308,7 @@ start_watcher() { # $1 mailbox $2 root $3 session: one watcher per team (see .ag
     cmd="$cmd $(shell_quote "$arg")"
   done
   # run-shell expands #{...} formats, so any # in a path is doubled.
-  tmux run-shell -b -t "=$sess:" "${cmd//#/##} >/dev/null 2>&1"
+  tmx run-shell -b -t "=$sess:" "${cmd//#/##} >/dev/null 2>&1"
 }
 
 write_stop_note() { # $1 mailbox $2 reason: what the next session's list and start show
@@ -448,9 +491,17 @@ team_write() { # $1 mailbox $2.. KEY=VALUE... (atomic replace)
   for kv in "${@:2}"; do printf '%s\n' "$kv"; done > "$f.tmp" && mv "$f.tmp" "$f"
 }
 
-session_created() { # $1 session name -> creation stamp ('' when not running)
-  tmux list-sessions -F '#{session_created} #{session_name}' 2>/dev/null \
+session_created() { # $1 session name $2 socket ('' = TF_SOCKET) -> creation stamp ('' when not running)
+  local sock="${2:-$TF_SOCKET}"
+  [ -n "$sock" ] || return 0
+  tmux -L "$sock" list-sessions -F '#{session_created} #{session_name}' 2>/dev/null \
     | awk -v n="$1" '{ c = $1; sub(/^[^ ]+ /, ""); if ($0 == n) { print c; exit } }'
+}
+
+record_socket() { # $1 mailbox -> the server its launch record names (older records: the default server)
+  local s
+  s="$(team_get "$1" SOCKET)"
+  printf '%s' "${s:-$TEAMFLOW_LEGACY_SOCKET}"
 }
 
 default_conf() { # $1 team root -> default config path ('' when there is none)
@@ -474,30 +525,62 @@ conf_session() { # $1 team root $2 conf -> session name that config yields ('' i
 # launcher that wrote none. Such a launcher knew the default config and the
 # full team only, so that is what it is attributed to. A record without
 # MODE predates workers mode and is a full team too.
+# ACTIVE_SOCKET is the tmux server the team runs on. ACTIVE_LEGACY is 1 when
+# that is the shared default server, where teamflow 0.3 and older started
+# every team. A session under one of the given names is looked for on its
+# own server first, then on the default server.
 find_active() {
-  local mailbox="$1" dconf="$2" name created
-  ACTIVE_SESSION="" ACTIVE_CONFIG="" ACTIVE_RECORDED=0 ACTIVE_MODE=""
+  local mailbox="$1" dconf="$2" name created sock
+  ACTIVE_SESSION="" ACTIVE_CONFIG="" ACTIVE_RECORDED=0 ACTIVE_MODE="" ACTIVE_SOCKET="" ACTIVE_LEGACY=0
   name="$(team_get "$mailbox" SESSION)"
   if [ -n "$name" ]; then
-    created="$(session_created "$name")"
+    sock="$(record_socket "$mailbox")"
+    created="$(session_created "$name" "$sock")"
     if [ -n "$created" ] && [ "$created" = "$(team_get "$mailbox" CREATED)" ]; then
       ACTIVE_SESSION="$name"
       ACTIVE_CONFIG="$(team_get "$mailbox" CONFIG)"
       ACTIVE_MODE="$(team_get "$mailbox" MODE)"
       ACTIVE_MODE="${ACTIVE_MODE:-full}"
       ACTIVE_RECORDED=1
+      ACTIVE_SOCKET="$sock"
+      [ "$sock" != "$TEAMFLOW_LEGACY_SOCKET" ] || ACTIVE_LEGACY=1
       return 0
     fi
   fi
   for name in "${@:3}"; do
     [ -n "$name" ] || continue
-    if [ -n "$(session_created "$name")" ]; then
-      ACTIVE_SESSION="$name"
-      ACTIVE_CONFIG="$dconf"
-      ACTIVE_MODE=full
-      return 0
-    fi
+    for sock in "$(tf_socket_name "$name")" "$TEAMFLOW_LEGACY_SOCKET"; do
+      if [ -n "$(session_created "$name" "$sock")" ]; then
+        ACTIVE_SESSION="$name"
+        ACTIVE_CONFIG="$dconf"
+        ACTIVE_MODE=full
+        ACTIVE_SOCKET="$sock"
+        [ "$sock" != "$TEAMFLOW_LEGACY_SOCKET" ] || ACTIVE_LEGACY=1
+        return 0
+      fi
+    done
   done
+}
+
+# legacy_steps <team root> <default conf>: how to move a team from the
+# shared default server to its own. Prints the lines through say.
+legacy_steps() {
+  local conf
+  conf="$(hint_conf "$ACTIVE_CONFIG" "$1" "$2")"
+  say "Move it to this project's own tmux server when its workers are idle (teamflow task list shows open tasks)."
+  say "Worktrees, the mailbox, and each worker's conversation stay:"
+  say "  teamflow --kill"
+  say "  teamflow start --last$conf"
+}
+
+# refuse_legacy <mode> <team root> <default conf>: the team runs on the
+# shared default tmux server, where teamflow 0.3 and older started every
+# project's team and its CLIs share one environment. Change nothing.
+refuse_legacy() {
+  say "session $ACTIVE_SESSION runs on the shared default tmux server, started by an older teamflow. Nothing was changed."
+  say "This teamflow gives each project's team its own tmux server, so $1 does not act on that session."
+  legacy_steps "$2" "$3"
+  exit 1
 }
 
 hint_mode() { # $1 team mode -> ' --workers' ('' for the full team)
@@ -590,7 +673,7 @@ cmd_init() {
   # team started from those copies must stop first: its windows run them.
   if [ -f "$root/scripts/teamflow" ] && ! is_tool_source "$root"; then
     running="$(team_get "$common/$MAILBOX_NAME" SESSION)"
-    if [ -n "$running" ] && [ -n "$(session_created "$running")" ] \
+    if [ -n "$running" ] && [ -n "$(session_created "$running" "$(record_socket "$common/$MAILBOX_NAME")")" ] \
        && [ -z "$(team_get "$common/$MAILBOX_NAME" TOOL)" ]; then
       die "session $running runs from teamflow files copied into this project. Stop it with: teamflow --kill, then run teamflow init again"
     fi
@@ -661,9 +744,9 @@ cmd_start() { # $1 --config value ('' = default config)  $2 --only value  $3 --l
 }
 
 # Shared worker conversation and launch preparation.
-pane_cmd() { # role cli model effort cwd rolefile sid mode type flavor launch -> pane shell command
+pane_cmd() { # role cli model effort cwd rolefile sid mode type flavor launch name -> pane shell command
   local prole="$1" pcli="$2" pmodel="$3" peffort="$4" pcwd="$5" pfile="$6" psid="$7" pmode="$8" ptype="$9"
-  local pflavor="${10}" plaunch="${11}"
+  local pflavor="${10}" plaunch="${11}" pname="${12:-}"
   local envs qfile qmailbox qlib sflag
   qfile="$(shell_quote "$pfile")"
   qmailbox="$(shell_quote "$mailbox")"
@@ -704,6 +787,9 @@ $(shell_quote "You are the team $prole. Read $pfile and AGENTS.md in $pcwd. Run:
     claude|zai)
       args="$sflag $(shell_quote "$psid") --model $(shell_quote "$pmodel")"
       [ -n "$peffort" ] && args="$args --effort $(shell_quote "$peffort")"
+      # The display name in the prompt box, the /resume picker, and the
+      # terminal title. Only for a command that has the flag (name_flag).
+      [ -n "$pname" ] && args="$args --name $(shell_quote "$pname")"
       args="$args --append-system-prompt-file $qfile$hello"
       ;;
   esac
@@ -718,7 +804,36 @@ $(shell_quote "You are the team $prole. Read $pfile and AGENTS.md in $pcwd. Run:
   # A Claude-flavored command must never inherit another backend's routing.
   # A wrapper sets its own after this.
   [ "$pflavor" = codex ] || run="unset $CLAUDE_ROUTING_VARS; $run"
-  printf '%s %s' "$envs" "$run"
+  # No worker inherits the session identity of the agent that started the
+  # team (TEAMFLOW_SESSION_ENV). The team's server drops those variables
+  # when it starts. This covers a server that kept them anyway.
+  printf '%s %s %s' "$envs" "$(tf_unset_session_env)" "$run"
+}
+
+NAME_FLAGS="" # launch SEP yes|no, one line per command checked in this run
+name_flag() { # $1 flavor $2 launch -> exit 0 when the command takes claude's --name <name>
+  local hit path ok=no
+  case "$1" in claude|zai) ;; *) return 1 ;; esac
+  # Started through the user's interactive shell, a command is too slow and
+  # too side-effecting to ask for its help text.
+  case "$2" in exec:*|script:*) path="${2#*:}" ;; zai:*) path="${2#zai:}" ;; *) return 1 ;; esac
+  hit="$(printf '%s' "$NAME_FLAGS" | awk -F "$TSV_SEP" -v l="$2" '$1 == l { print $2; exit }')"
+  if [ -z "$hit" ]; then
+    # Older Claude Code versions refuse an unknown --name and exit, so ask.
+    python3 -c '
+import subprocess, sys
+try:
+    out = subprocess.run([sys.argv[1], "--help"], capture_output=True, text=True,
+                         timeout=5, stdin=subprocess.DEVNULL)
+except (OSError, subprocess.SubprocessError):
+    sys.exit(1)
+sys.exit(0 if "--name <name>" in out.stdout + out.stderr else 1)
+' "$path" && ok=yes
+    NAME_FLAGS="$NAME_FLAGS$2$TSV_SEP$ok
+"
+    hit="$ok"
+  fi
+  [ "$hit" = yes ]
 }
 
 
@@ -751,9 +866,11 @@ prepare_worker() {
   reg_write "$mailbox" "$role" "${reg[@]}"
 
   # A role file in the project overrides the installed default.
-  local resolved_role_file
+  local resolved_role_file name=""
   resolved_role_file="$(role_path "$root" "${role_file:-.agents/roles/$role.md}")"
-  worker_command="$(pane_cmd "$role" "$cli" "$model" "$effort" "$cwd" "$resolved_role_file" "$sid" "$mode" "$worker_type" "$flavor" "$launch")"
+  # A Claude worker shows <project>/<instance-id> as its session name.
+  ! name_flag "$flavor" "$launch" || name="$(basename "$root")/$role"
+  worker_command="$(pane_cmd "$role" "$cli" "$model" "$effort" "$cwd" "$resolved_role_file" "$sid" "$mode" "$worker_type" "$flavor" "$launch" "$name")"
 }
 
 # ---------- up -----------------------------------------------------------------
@@ -778,6 +895,7 @@ cmd_up() { # $1 attach (1|0)  $2 --config value ('' = default config)  $3 worker
 
   local sess
   sess="$(session_name "$root" "$prefix")"
+  TF_SOCKET="$(tf_socket_name "$sess")"
 
   # One team per repo: look for a running team before any side effect. The
   # config and mode that started it reattach. Anything else is refused.
@@ -787,8 +905,12 @@ cmd_up() { # $1 attach (1|0)  $2 --config value ('' = default config)  $3 worker
   dconf="$(default_conf "$root")"
   find_active "$mailbox" "$dconf" "$sess" "$(conf_session "$root" "$dconf")"
   if [ -n "$ACTIVE_SESSION" ]; then
+    # A team an older teamflow started on the shared default server is not
+    # joined, and no second team starts beside it.
+    [ "$ACTIVE_LEGACY" = 0 ] || [ "$ACTIVE_MODE" = full ] || refuse_legacy start "$root" "$dconf"
     [ "$ACTIVE_CONFIG" = "$conf" ] && [ "$ACTIVE_MODE" = "$team_mode" ] \
       || refuse_other_config up "$conf" "$root" "$dconf" "$team_mode"
+    TF_SOCKET="$ACTIVE_SOCKET"
     # The running roster may differ from the config: workers added or
     # removed during the session last until --kill. Config edits made
     # while the team runs apply at the next start.
@@ -811,7 +933,8 @@ cmd_up() { # $1 attach (1|0)  $2 --config value ('' = default config)  $3 worker
     note_delegator "$root"
     start_watcher "$mailbox" "$root" "$sess"
     say "session $sess already running — reattaching (no duplicate launched)"
-    [ "$mode_attach" = 1 ] && exec tmux attach-session -t "=$sess"
+    [ "$mode_attach" = 1 ] && exec tmux -L "$TF_SOCKET" attach-session -t "=$sess"
+    say "watch the workers: $(attach_hint "$sess")"
     echo "$sess"
     return 0
   fi
@@ -927,7 +1050,7 @@ $tsv
 EOF
 
   boot_fail() {
-    tmux kill-session -t "=$sess" 2>/dev/null
+    tmx kill-session -t "=$sess" 2>/dev/null
     rm -f "$mailbox/active"
     die "$*"
   }
@@ -937,11 +1060,22 @@ EOF
   [ -n "$note_tsv" ] && rm -f "$mailbox/acks/notetaker.json"
   # One window per worker, named by its instance ID. Adding or removing a
   # worker opens or closes its window and leaves the others untouched.
-  p0="$(tmux new-session -d -P -F '#{pane_id}' -s "$sess" -n "${order_roles[0]}" \
+  # The session starts the project's own tmux server, which takes its
+  # global environment from this process. Without the Delegator's session
+  # variables, no worker can start as a child of the Delegator's session.
+  local -a clean_env=(env)
+  local v
+  for v in $(env | tf_session_vars) $TEAMFLOW_SERVER_ENV_EXTRA; do
+    clean_env+=(-u "$v")
+  done
+  p0="$("${clean_env[@]}" tmux -L "$TF_SOCKET" new-session -d -P -F '#{pane_id}' -s "$sess" -n "${order_roles[0]}" \
     -c "${order_cwds[0]}" "${order_cmds[0]}")"
-  tmux has-session -t "=$sess" 2>/dev/null || \
+  tmx has-session -t "=$sess" 2>/dev/null || \
     die "pane boot failed: '${order_roles[0]}' exited immediately (session rolled back)"
-  team_write "$mailbox" "SESSION=$sess" "CREATED=$(session_created "$sess")" \
+  # tmux adds PWD itself, and a server that was already running kept what
+  # it had. Every later window starts from the cleaned global environment.
+  scrub_server_env
+  team_write "$mailbox" "SESSION=$sess" "CREATED=$(session_created "$sess")" "SOCKET=$TF_SOCKET" \
     "CONFIG=$conf" "CONFIG_HASH=$(conf_hash "$conf")" "ROOT=$root" "STARTED_AT=$(now_utc)" "MODE=$team_mode" \
     "TOOL=$TOOL_HOME" "VERSION=$(tool_version)"
   if [ "$roster" != "$conf" ]; then
@@ -951,13 +1085,12 @@ EOF
   fi
   # Clear routing values from this session. Each pane also unsets them
   # before starting a native Claude CLI, while z.ai panes source zai_env.
-  local v
   for v in $CLAUDE_ROUTING_VARS; do
-    tmux set-environment -u -t "=$sess" "$v" 2>/dev/null
+    tmx set-environment -u -t "=$sess" "$v" 2>/dev/null
   done
   local -a role_pids=("$p0")
   while [ "$next_index" -lt "$pane_total" ]; do
-    new_pid="$(tmux new-window -d -P -F '#{pane_id}' -t "=$sess:" -n "${order_roles[$next_index]}" \
+    new_pid="$(tmx new-window -d -P -F '#{pane_id}' -t "=$sess:" -n "${order_roles[$next_index]}" \
       -c "${order_cwds[$next_index]}" "${order_cmds[$next_index]}")" \
       || boot_fail "could not create a window for ${order_roles[$next_index]}"
     role_pids+=("$new_pid")
@@ -966,7 +1099,7 @@ EOF
   local _pid _i=0
   for _pid in "${role_pids[@]}"; do
     case "$_pid" in
-      %*) worker_window "$_pid" ;;
+      %*) worker_window "$_pid" "${order_roles[$_i]}" ;;
       *) boot_fail "pane boot failed: '${order_roles[$_i]}' exited immediately or its pane id could not be captured" ;;
     esac
     _i=$((_i + 1))
@@ -1001,7 +1134,7 @@ EOF
   local i labels
   i=0
   while IFS="$TSV_SEP" read -r role label cli model effort worktree worker_type role_file flavor launch; do
-    tmux select-pane -t "${pids[$i]}" -T "$label"
+    tmx select-pane -t "${pids[$i]}" -T "$label"
     printf '%s\t%s\n' "$role" "${pids[$i]}" >> "$mailbox/panes.tsv"
     i=$((i + 1))
   done <<EOF
@@ -1023,8 +1156,9 @@ EOF
   rm -f "$mailbox/stopped"
   say "config: $conf"
   say "one window per worker. Workers idle until addressed. The Delegator runs in your own agent session and reaches the mailbox with: teamflow task|pane ..."
+  say "the team has its own tmux server. Watch the workers: $(attach_hint "$sess")"
   if [ "$mode_attach" = 1 ]; then
-    exec tmux attach-session -t "=$sess"
+    exec tmux -L "$TF_SOCKET" attach-session -t "=$sess"
   fi
   echo "$sess"
 }
@@ -1055,7 +1189,14 @@ cmd_verify() { # $1 --config value ('' = the running team, else the default conf
   fi
   prefix="$(printf '%s' "$confout" | head -1 | cut -d "$TSV_SEP" -f1)"
   sess="${ACTIVE_SESSION:-$(session_name "$root" "$prefix")}"
-  echo "session: $sess ($(tmux has-session -t "=$sess" 2>/dev/null && echo up || echo DOWN))"
+  TF_SOCKET="${ACTIVE_SOCKET:-$(tf_socket_name "$sess")}"
+  echo "session: $sess ($(tmx has-session -t "=$sess" 2>/dev/null && echo up || echo DOWN))"
+  if [ "$ACTIVE_LEGACY" = 1 ]; then
+    echo "server:  the shared default tmux server, started by an older teamflow"
+    legacy_steps "$root" "$(default_conf "$root")"
+  else
+    echo "server:  tmux -L $TF_SOCKET (this project's own)"
+  fi
   echo "config:  ${T_CONF:-none}"
   show_stop_note "$mailbox"
   if [ -n "$ACTIVE_SESSION" ]; then
@@ -1075,9 +1216,14 @@ cmd_verify() { # $1 --config value ('' = the running team, else the default conf
     echo "watcher:   $([ -n "$wpid" ] && kill -0 "$wpid" 2>/dev/null && echo "running (pid $wpid)" || echo "not running"). Checks each minute. A minute after the Delegator leaves, idle workers stop, busy ones when done, all within 2 hours (log: .git/teamflow/watch.log)"
   fi
   while IFS="$TSV_SEP" read -r role label cli model effort worktree worker_type role_file flavor launch; do
-    local pid ack="no" alive="gone" ack_time="" bid=""
-    pid=$(awk -F '\t' -v r="$role" '$1 == r {print $2; exit}' "$mailbox/panes.tsv" 2>/dev/null)
-    [ -n "$pid" ] && tmux list-panes -a -F '#{pane_id}' 2>/dev/null | grep -qx "$pid" && alive="pane $pid"
+    local pid ack="no" alive="gone" ack_time="" bid="" found
+    # The worker's pane in this session, found by its name, never by a
+    # registered ID alone.
+    if found="$(tf_worker_pane "$TF_SOCKET" "$sess" "$role")"; then
+      pid="${found%% *}"
+      found="${found#* }"
+      case "$found" in 0\ *) alive="pane $pid" ;; *) alive="exited $pid" ;; esac
+    fi
     # backfill a codex id that boot-time discovery missed (partial boot);
     # same cwd binding as boot-time discovery, never a foreign session.
     # Not for an external Delegator: the user's own Codex session may run in
@@ -1148,7 +1294,7 @@ EOF
 }
 
 cmd_kill() { # $1 --config value ('' = the running team, else the default config)
-  local root confout prefix sess mailbox recorded
+  local root confout prefix sess mailbox recorded own killed=0
   root="$(team_root)" || exit $?
   mailbox="$(git_common_dir "$root")/$MAILBOX_NAME" || exit $?
   follow_team --kill "$root" "$mailbox" "$1"
@@ -1159,12 +1305,26 @@ cmd_kill() { # $1 --config value ('' = the running team, else the default config
     prefix="$(printf '%s' "$confout" | head -1 | cut -d "$TSV_SEP" -f1)"
     sess="$(session_name "$root" "$prefix")"
   fi
-  tmux kill-session -t "=$sess" 2>/dev/null && say "killed $sess" || say "no session $sess"
+  own="$(tf_socket_name "$sess")"
+  [ "$ACTIVE_LEGACY" = 1 ] || own="${ACTIVE_SOCKET:-$own}"
+  if tmux -L "$own" kill-session -t "=$sess" 2>/dev/null; then
+    say "killed $sess"
+    killed=1
+  fi
+  # teamflow 0.3 and older started every team on the shared default server.
+  # A session there under this project's name is this project's old team.
+  # Nothing else on that server is touched.
+  if [ "$own" != "$TEAMFLOW_LEGACY_SOCKET" ] \
+     && tmux -L "$TEAMFLOW_LEGACY_SOCKET" kill-session -t "=$sess" 2>/dev/null; then
+    say "killed $sess on the shared default tmux server, where an older teamflow started it"
+    killed=1
+  fi
+  [ "$killed" = 1 ] || say "no session $sess"
   # The watcher stops a team with a reason, for the next session to read.
   [ -z "${TEAMFLOW_STOP_REASON:-}" ] || write_stop_note "$mailbox" "$TEAMFLOW_STOP_REASON"
   # drop the launch record unless its session is, against all odds, still there
   recorded="$(team_get "$mailbox" SESSION)"
-  [ -n "$recorded" ] && [ -n "$(session_created "$recorded")" ] || rm -f "$mailbox/active"
+  [ -n "$recorded" ] && [ -n "$(session_created "$recorded" "$(record_socket "$mailbox")")" ] || rm -f "$mailbox/active"
   # Stopped workers' worktrees whose work is already merged go away. The
   # rest are listed for a merge or discard decision.
   python3 "$TOOL_HOME/scripts/teamflow_workers.py" worktrees clean "$root"
@@ -1184,6 +1344,7 @@ cmd_trim() { # $1 --config value: remove idle workers from the running session
   follow_team trim "$root" "$(git_common_dir "$root")/$MAILBOX_NAME" "$1"
   note_delegator "$root"
   [ -n "$ACTIVE_SESSION" ] || die "no team is running, so there are no workers to trim"
+  [ "$ACTIVE_LEGACY" = 0 ] || refuse_legacy trim "$root" "$(default_conf "$root")"
   python3 "$TOOL_HOME/scripts/teamflow_workers.py" trim "$T_CONF" "$root"
   rc=$?
   if [ "$rc" = 3 ]; then
@@ -1202,6 +1363,7 @@ cmd_view() { # $1 --config value  $2 close (1|0)  $3.. worker IDs
   follow_team view "$root" "$(git_common_dir "$root")/$MAILBOX_NAME" "$conf_arg"
   note_delegator "$root"
   [ -n "$ACTIVE_SESSION" ] || die "no team is running, so there is nothing to view"
+  [ "$ACTIVE_LEGACY" = 0 ] || refuse_legacy view "$root" "$(default_conf "$root")"
   local -a args=(view "$T_CONF" "$root")
   [ "$close" = 0 ] || args+=(--close)
   python3 "$TOOL_HOME/scripts/teamflow_workers.py" "${args[@]}" "$@"
@@ -1221,10 +1383,11 @@ cmd_worktrees() { # $1 action (list|merge|discard) $2 instance id
 }
 
 # Launch one worker in an existing team. The Python manager publishes the registry.
-cmd_launch_worker() { # config root session worker -> the new window's pane id
+cmd_launch_worker() { # config root session worker socket -> the new window's pane id
   local conf="$1" root="$2" sess="$3" wanted="$4"
   local mailbox lib_dir wt_root zai_env
   mailbox="$(git_common_dir "$root")/$MAILBOX_NAME"
+  TF_SOCKET="${5:-$(record_socket "$mailbox")}"
   lib_dir="$TOOL_LIB"
   wt_root="$root/.teamflow-worktrees"
   local confout role label cli model effort worktree worker_type role_file flavor launch cwd worker_command
@@ -1247,9 +1410,9 @@ cmd_launch_worker() { # config root session worker -> the new window's pane id
     prepare_worker
     local pid
     [ "$role" != notetaker ] || rm -f "$mailbox/acks/notetaker.json"
-    pid="$(tmux new-window -d -P -F '#{pane_id}' -t "=$sess:" -n "$role" -c "$cwd" "$worker_command")" || return 1
-    worker_window "$pid"
-    tmux select-pane -t "$pid" -T "$label"
+    pid="$(tmx new-window -d -P -F '#{pane_id}' -t "=$sess:" -n "$role" -c "$cwd" "$worker_command")" || return 1
+    worker_window "$pid" "$role"
+    tmx select-pane -t "$pid" -T "$label"
     printf '%s\n' "$pid"
     return 0
   done < <(printf '%s\n' "$confout" | tail -n +2)
@@ -1270,6 +1433,12 @@ cmd_workers() { # $1 config argument $2 action $3 value $4 save (1|0)
     say "no team is running, so this starts one with $3"
     cmd_up 0 "$1" 1 "$3"
     return
+  fi
+  # A team on the shared default server is listed, never changed.
+  if [ "$ACTIVE_LEGACY" = 1 ]; then
+    [ "$2" = list ] || refuse_legacy "$2" "$root" "$(default_conf "$root")"
+    say "session $ACTIVE_SESSION runs on the shared default tmux server, started by an older teamflow."
+    legacy_steps "$root" "$(default_conf "$root")"
   fi
   [ "$2" != list ] || show_stop_note "$(git_common_dir "$root")/$MAILBOX_NAME"
   local -a args=("$2" "$conf" "$root")
@@ -1345,10 +1514,78 @@ sys.exit(0 if have is None or need is None or have >= need else 1)
 PY
 }
 
+cli_pid() { # $1 pane pid -> the agent CLI under it: the first process that is not a shell
+  local pid="$1" comm child depth=0
+  while [ "$depth" -lt 8 ]; do
+    comm="$(ps -o comm= -p "$pid" 2>/dev/null)"
+    comm="${comm##*/}"
+    case "${comm#-}" in sh|bash|zsh|dash|ksh|mksh|fish|env) ;; *) break ;; esac
+    child="$(pgrep -P "$pid" 2>/dev/null | head -1)"
+    [ -n "$child" ] || break
+    pid="$child"
+    depth=$((depth + 1))
+  done
+  printf '%s' "$pid"
+}
+
+env_names() { # $1 pid -> the variable names in its environment, one per line, never their values
+  if [ -r "/proc/$1/environ" ]; then
+    tr '\0' '\n' < "/proc/$1/environ"
+  else
+    # ps eww appends the environment to the command line as NAME=value
+    # words. macOS shows it for the user's own programs, not for system
+    # binaries such as /bin/sh.
+    ps eww -o command= -p "$1" 2>/dev/null | tr ' ' '\n'
+  fi | sed -n 's/^\([A-Za-z_][A-Za-z0-9_]*\)=.*/\1/p' | sort -u
+}
+
+# doctor_team <team root>: the running team is on this project's own tmux
+# server, and no worker started with another agent session's identity.
+doctor_team() {
+  local root="$1" mailbox dconf line worker pane_pid pid all names clean=0 leaked=0 unread=0 kept
+  mailbox="$(git -C "$root" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)/$MAILBOX_NAME"
+  dconf="$(default_conf "$root")"
+  find_active "$mailbox" "$dconf" "$(conf_session "$root" "$dconf")"
+  if [ -z "$ACTIVE_SESSION" ]; then
+    ok "no team is running in this project"
+    return 0
+  fi
+  TF_SOCKET="$ACTIVE_SOCKET"
+  if [ "$ACTIVE_LEGACY" = 1 ]; then
+    problem "team $ACTIVE_SESSION runs on the shared default tmux server, with every team an older teamflow started: teamflow --kill, then teamflow start --last$(hint_conf "$ACTIVE_CONFIG" "$root" "$dconf")"
+  else
+    ok "team $ACTIVE_SESSION runs on its own tmux server (tmux -L $ACTIVE_SOCKET)"
+    kept="$(tmx show-environment -g 2>/dev/null | tf_session_vars | paste -sd ' ' -)"
+    [ -z "$kept" ] || problem "the team's tmux server keeps Claude Code session variables in its global environment: $kept. Restart the team: teamflow --kill, then teamflow start --last"
+  fi
+  while IFS='	' read -r worker pane_pid; do
+    [ -n "$pane_pid" ] || continue
+    pid="$(cli_pid "$pane_pid")"
+    all="$(env_names "$pid")"
+    names="$(printf '%s\n' "$all" | sed 's/$/=/' | tf_session_vars | paste -sd ' ' -)"
+    if [ -n "$names" ]; then
+      problem "worker $worker started with another Claude Code session's variables: $names. Restart it: teamflow --kill, then teamflow start --last"
+      leaked=$((leaked + 1))
+    elif printf '%s\n' "$all" | grep -qx 'PATH'; then
+      clean=$((clean + 1))
+    else
+      unread=$((unread + 1))
+      echo "  ?        worker $worker: cannot read the environment of its process $pid"
+    fi
+  done <<EOF
+$(tmx list-panes -s -t "=$ACTIVE_SESSION:" -F '#{session_name}	#{window_name}	#{@teamflow_worker}	#{pane_dead}	#{pane_pid}' 2>/dev/null \
+  | awk -F '\t' -v s="$ACTIVE_SESSION" '$1 == s && $4 == 0 { print ($3 != "" ? $3 : $2) "\t" $5 }')
+EOF
+  [ "$clean" = 0 ] || ok "$clean running worker(s) started without Claude Code session variables"
+  [ "$clean$leaked$unread" != 000 ] || ok "no worker CLI is running"
+  return 0
+}
+
 cmd_doctor() {
   local bad=0 v root conf need cli
   ok() { printf '  ok       %s\n' "$*"; }
   miss() { printf '  MISSING  %s\n' "$*"; bad=1; }
+  problem() { printf '  PROBLEM  %s\n' "$*"; bad=1; }
   echo "teamflow $(tool_version) at $TOOL_HOME"
   if command -v tmux >/dev/null 2>&1; then
     v="$(tmux -V | sed 's/[^0-9.]//g')"
@@ -1393,6 +1630,7 @@ EOF
         || miss "this project's stub skills: run teamflow init"
       [ ! -f "$root/scripts/teamflow" ] || is_tool_source "$root" \
         || miss "no copied teamflow files: this project still has them. Run teamflow init"
+      doctor_team "$root"
     else
       echo "  (not a teamflow project: run teamflow init here to set it up)"
     fi

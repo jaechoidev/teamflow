@@ -17,6 +17,10 @@ import time
 
 SEP = "\x1f"
 TOOL_HOME = Path(__file__).resolve().parents[1]
+# Each team runs on its own tmux server, named in its launch record as
+# SOCKET (.agents/lib/tmux-server.sh). A record without one is a team that
+# teamflow 0.3 or older started on the shared default server.
+LEGACY_SOCKET = "default"
 NOTE_QUEUE = TOOL_HOME / ".agents/lib/note-queue.sh"
 SLUG = re.compile(r"^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$")
 
@@ -202,14 +206,45 @@ def task_destinations(root):
                 break
 
 
-def tmux(*args):
+def socket_of(record):
+    """The tmux server a team runs on."""
+    return record.get("SOCKET") or LEGACY_SOCKET
+
+
+def tmux(sock, *args):
+    """tmux on one named server. A bare tmux would follow $TMUX to whatever
+    server the caller sits in."""
     try:
-        result = subprocess.run(["tmux", *args], capture_output=True, text=True)
+        result = subprocess.run(["tmux", "-L", sock, *args], capture_output=True, text=True)
     except FileNotFoundError as exc:
         raise ConfigError("tmux not found") from exc
     if result.returncode:
         raise ConfigError(result.stderr.strip() or "tmux command failed")
     return result.stdout.strip()
+
+
+def pane_worker(option, window):
+    """The worker a pane belongs to, by the rule pane.sh checks before it
+    types (tf_worker_pane): the window named after the worker, or the view
+    window with the worker's @teamflow_worker option. None when neither fits."""
+    if window == "view":
+        return option or None
+    return window if option in ("", window) else None
+
+
+def session_panes(record):
+    """[(pane id, dead, worker, window)] for every pane of the team's session.
+    worker comes from pane_worker. Rows are checked by session name, because
+    tmux can resolve a target that does not exist to another session."""
+    session = record["SESSION"]
+    listing = tmux(socket_of(record), "list-panes", "-s", "-t", f"={session}:", "-F",
+                   "#{session_name}\t#{pane_id}\t#{pane_dead}\t#{@teamflow_worker}\t#{window_name}")
+    rows = []
+    for line in listing.splitlines():
+        parts = line.split("\t")
+        if len(parts) == 5 and parts[0] == session:
+            rows.append((parts[1], parts[2] != "0", pane_worker(parts[3], parts[4]), parts[4]))
+    return rows
 
 
 def read_record(path):
@@ -223,7 +258,7 @@ def running_team(root, path):
     if not record.get("SESSION"):
         return None
     try:
-        sessions = tmux("list-sessions", "-F", "#{session_name} #{session_created}")
+        sessions = tmux(socket_of(record), "list-sessions", "-F", "#{session_name} #{session_created}")
         created = dict(line.rsplit(" ", 1) for line in sessions.splitlines()).get(record["SESSION"])
     except ConfigError:
         return None
@@ -235,12 +270,13 @@ def running_team(root, path):
 
 
 def active_panes(root, record=None):
+    """{worker: pane id} for each registered worker whose pane is alive in
+    the team's session and still carries that worker's name."""
     record = record or read_record(mailbox_path(root) / "active")
     if not record.get("SESSION"):
         return {}
     try:
-        alive = set(tmux("list-panes", "-s", "-t", "=" + record["SESSION"],
-                         "-F", "#{pane_id} #{pane_dead}").splitlines())
+        alive = {pane: worker for pane, dead, worker, _ in session_panes(record) if not dead}
     except ConfigError:
         return {}
     registry = mailbox_path(root) / "panes.tsv"
@@ -248,7 +284,7 @@ def active_panes(root, record=None):
     if registry.exists():
         for line in registry.read_text().splitlines():
             parts = line.split("\t", 1)
-            if len(parts) == 2 and parts[1] + " 0" in alive:
+            if len(parts) == 2 and alive.get(parts[1]) == parts[0]:
                 mapping[parts[0]] = parts[1]
     return mapping
 
@@ -276,7 +312,8 @@ def sync_workers(root, path, desired):
     # Include dead panes when removing an instance, so its window closes too.
     registry = mailbox / "panes.tsv"
     registered = dict(line.split("\t", 1) for line in registry.read_text().splitlines() if "\t" in line) if registry.exists() else {}
-    all_panes = set(tmux("list-panes", "-s", "-t", "=" + record["SESSION"], "-F", "#{pane_id}").splitlines())
+    sock = socket_of(record)
+    all_panes = {pane for pane, _, _, _ in session_panes(record)}
     obsolete = {worker: pane for worker, pane in registered.items() if worker not in wanted and pane in all_panes}
     for worker in obsolete:
         guard_removal(root, worker)
@@ -302,21 +339,24 @@ def sync_workers(root, path, desired):
             worker = row[0]
             result = subprocess.run(["bash", str(Path(__file__).with_name("teamflow")),
                                      "--internal-launch-worker", str(session), str(root), record["SESSION"],
-                                     worker], capture_output=True, text=True)
+                                     worker, sock], capture_output=True, text=True)
             pane = result.stdout.strip()
             if result.returncode or not re.fullmatch(r"%[0-9]+", pane):
                 raise ConfigError(result.stderr.strip() or f"could not launch {worker}")
             launched.append(pane)
             # A CLI that cannot start exits within moments. Watch briefly.
+            # A pane that is gone counts as exited: display-message would
+            # report on some other pane instead.
             for _ in range(5):
                 time.sleep(0.1)
-                if tmux("display-message", "-p", "-t", pane, "#{pane_dead}") != "0":
+                state = {pane_id: dead for pane_id, dead, _, _ in session_panes(record)}
+                if state.get(pane, True):
                     raise ConfigError(f"{worker} exited during launch")
             panes[worker] = pane
     except ConfigError:
         for pane in launched:
             try:
-                tmux("kill-pane", "-t", pane)
+                tmux(sock, "kill-pane", "-t", pane)
             except ConfigError:
                 pass
         if previous is None:
@@ -329,11 +369,11 @@ def sync_workers(root, path, desired):
         interim = {**registered, **panes}
         atomic_write(registry, "".join(f"{worker}\t{pane}\n" for worker, pane in interim.items()))
         for worker, pane in obsolete.items():
-            tmux("kill-pane", "-t", pane)
+            tmux(sock, "kill-pane", "-t", pane)
         for row in missing:
             old = registered.get(row[0])
             if old and old in all_panes:
-                tmux("kill-pane", "-t", old)
+                tmux(sock, "kill-pane", "-t", old)
         atomic_write(registry, "".join(f"{row[0]}\t{panes[row[0]]}\n" for row in rows))
         record["CONFIG_HASH"] = hashlib.sha256(path.read_bytes()).hexdigest()
         atomic_write(mailbox / "active", "".join(f"{key}={value}\n" for key, value in record.items()))
@@ -422,14 +462,18 @@ def list_workers(root, path):
     listed = {row[0] for row in rows}
     if not record and not any(row[0] != "delegator" for row in rows):
         print(f"no default team in {path.name}. Add workers on demand: teamflow add <type> (see teamflow types)")
+    try:
+        windows = {pane: window for pane, _, _, window in session_panes(record)} if panes else {}
+    except ConfigError:
+        windows = {}
     for worker_id, label, cli, model, _, worktree, kind, _, _, _ in rows:
         if worker_id == "delegator":
             continue
         state = panes.get(worker_id, "stopped")
         if record and worker_id not in in_config:
             state += " (session only)"
-        target = window_target(record, worker_id, panes[worker_id]) if worker_id in panes else ""
-        opener = f"\ttmux attach -t {target}" if target else ""
+        target = window_target(record, worker_id, windows.get(panes.get(worker_id), ""))
+        opener = f"\t{attach_command(record, target)}" if target else ""
         print(f"{worker_id}\t{kind or worker_id}\t{cli}\t{model}\t{worktree}\t{state}{opener}")
     for worker_id, pane in panes.items():
         if worker_id not in listed and worker_id != "delegator":
@@ -438,21 +482,35 @@ def list_workers(root, path):
         for worker_id in sorted(in_config - listed):
             print(f"{worker_id}\tin {path.name}, not in this session\t\t\t\tstopped")
         if panes:
-            print("already inside tmux? use tmux switch-client -t with the same target instead of attach")
+            print(inside_tmux_hint(record))
         digest = hashlib.sha256(path.read_bytes()).hexdigest()
         if record.get("CONFIG_HASH", digest) != digest:
             print(f"{path.name} changed since this team started. It applies at the next start",
                   file=sys.stderr)
 
 
-def window_target(record, worker_id, pane):
-    """The tmux target of a worker's window. A window named after its worker
-    is targeted by name, which survives window renumbering."""
-    try:
-        index, name = tmux("display-message", "-p", "-t", pane, "#{window_index} #{window_name}").split(" ", 1)
-    except (ConfigError, ValueError):
+def window_target(record, worker_id, window):
+    """The tmux target of a worker's window, by name, which survives window
+    renumbering: the worker's own window, or the view window it joined."""
+    if window not in (worker_id, "view"):
         return ""
-    return f"{record['SESSION']}:{name if name in (worker_id, 'view') else index}"
+    return f"{record['SESSION']}:{window}"
+
+
+def quoted(word):
+    return word if re.fullmatch(r"[A-Za-z0-9_./:%=@+-]+", word) else "'" + word.replace("'", "'\\''") + "'"
+
+
+def attach_command(record, target):
+    """The command that opens a target from a terminal outside tmux."""
+    return f"tmux -L {quoted(socket_of(record))} attach -t {quoted(target)}"
+
+
+def inside_tmux_hint(record):
+    sock = quoted(socket_of(record))
+    return (f"already inside tmux? tmux -L {sock} switch-client -t <target> works only from a client of this "
+            f"team's server. From another tmux, open a new terminal, or nest it: "
+            f"env -u TMUX tmux -L {sock} attach -t <target>")
 
 
 def instances(cp, kind=None):
@@ -850,29 +908,32 @@ def registered_panes(root):
             (line.split("\t", 1) for line in registry.read_text().splitlines() if "\t" in line)}
 
 
-def own_window(pane, worker):
+def own_window(sock, pane, worker):
     """Settings every worker window gets at launch: its ID as a fixed name,
     kept after the CLI exits, with new output flagged."""
-    tmux("rename-window", "-t", pane, worker)
+    tmux(sock, "rename-window", "-t", pane, worker)
     for option, value in (("remain-on-exit", "on"), ("automatic-rename", "off"),
                           ("allow-rename", "off"), ("monitor-activity", "on")):
-        tmux("set-window-option", "-t", pane, option, value)
+        tmux(sock, "set-window-option", "-t", pane, option, value)
 
 
 def close_view(record, root):
     """Move every pane in the view window back into its own worker window."""
+    sock = socket_of(record)
     try:
-        listing = tmux("list-panes", "-t", f"={record['SESSION']}:view", "-F", "#{pane_id}").split()
+        listing = [pane for pane, _, _, window in session_panes(record) if window == "view"]
     except ConfigError:
+        return []
+    if not listing:
         return []
     owners = registered_panes(root)
     first, rest = listing[0], listing[1:]
     for pane in rest:
-        tmux("break-pane", "-d", "-s", pane, "-n", owners.get(pane, pane.lstrip("%")))
-        own_window(pane, owners.get(pane, pane.lstrip("%")))
-    tmux("set-window-option", "-u", "-t", first, "pane-border-status")
-    tmux("set-window-option", "-u", "-t", first, "pane-border-format")
-    own_window(first, owners.get(first, first.lstrip("%")))
+        tmux(sock, "break-pane", "-d", "-s", pane, "-n", owners.get(pane, pane.lstrip("%")))
+        own_window(sock, pane, owners.get(pane, pane.lstrip("%")))
+    tmux(sock, "set-window-option", "-u", "-t", first, "pane-border-status")
+    tmux(sock, "set-window-option", "-u", "-t", first, "pane-border-format")
+    own_window(sock, first, owners.get(first, first.lstrip("%")))
     return [owners.get(pane, pane) for pane in listing]
 
 
@@ -882,6 +943,7 @@ def view_workers(root, path, ids, close):
     if not record:
         raise ConfigError("no team is running, so there is nothing to view")
     session = record["SESSION"]
+    sock = socket_of(record)
     closed = close_view(record, root)
     if close:
         print(f"closed the view: {', '.join(closed)} are back in their own windows" if closed
@@ -896,17 +958,19 @@ def view_workers(root, path, ids, close):
     if not chosen:
         raise ConfigError("no running workers to view")
     first = panes[chosen[0]]
-    tmux("rename-window", "-t", first, "view")
     for worker in chosen:
-        # CLIs rewrite pane titles, so the border shows a pane option instead.
-        tmux("set-option", "-p", "-t", panes[worker], "@teamflow_worker", worker)
+        # CLIs rewrite pane titles, so the border shows a pane option
+        # instead. It also tells pane.sh whose pane this is inside the view.
+        tmux(sock, "set-option", "-p", "-t", panes[worker], "@teamflow_worker", worker)
+    tmux(sock, "rename-window", "-t", first, "view")
     for worker in chosen[1:]:
-        tmux("join-pane", "-d", "-s", panes[worker], "-t", first)
-        tmux("select-layout", "-t", first, "tiled")
-    tmux("set-window-option", "-t", first, "pane-border-status", "top")
-    tmux("set-window-option", "-t", first, "pane-border-format", " #{@teamflow_worker} ")
+        tmux(sock, "join-pane", "-d", "-s", panes[worker], "-t", first)
+        tmux(sock, "select-layout", "-t", first, "tiled")
+    tmux(sock, "set-window-option", "-t", first, "pane-border-status", "top")
+    tmux(sock, "set-window-option", "-t", first, "pane-border-format", " #{@teamflow_worker} ")
     print(f"view: {', '.join(chosen)}")
-    print(f"open it: tmux attach -t {session}:view (inside tmux: tmux switch-client -t {session}:view)")
+    print(f"open it: {attach_command(record, f'{session}:view')}")
+    print(inside_tmux_hint(record).replace("<target>", f"{quoted(session)}:view"))
     print("put them back in their own windows: teamflow view --close")
 
 

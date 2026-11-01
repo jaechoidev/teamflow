@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Project setup checks: install, thin projects, linked worktrees, and
-migration from the ai-team names. Stub CLIs and a private tmux server."""
+migration from the ai-team names. Stub CLIs, and tmux servers in a private
+directory."""
 
 import os
 from pathlib import Path
@@ -47,17 +48,24 @@ class ProjectTest(unittest.TestCase):
         stubs.mkdir()
         self.log = self.base / "stub.log"
         (stubs / "claude").write_text(
-            '#!/bin/sh\necho "$AGENT_ROLE $*" >> "$STUB_LOG"\nexec sleep 60\n')
-        socket = f"teamflow-test-{os.getpid()}"
-        (stubs / "tmux").write_text(f'#!/bin/sh\nexec {shutil.which("tmux")} -L {socket} "$@"\n')
+            '#!/bin/sh\n[ "$1" = --help ] && exit 0\necho "$AGENT_ROLE $*" >> "$STUB_LOG"\nexec sleep 60\n')
         for stub in stubs.iterdir():
             stub.chmod(0o755)
+        # Every tmux server of the test, the default one included, lives in
+        # a private directory with a short path (socket paths have a limit).
+        self.tmux_dir = Path(tempfile.mkdtemp(prefix="tft-", dir="/tmp"))
+        self.addCleanup(shutil.rmtree, self.tmux_dir, ignore_errors=True)
         self.claude_home = self.base / "claude-home"
         self.env = {**os.environ, **GIT, "PATH": f"{stubs}{os.pathsep}{os.environ['PATH']}",
                     "STUB_LOG": str(self.log), "CLAUDE_CONFIG_DIR": str(self.claude_home),
-                    "XDG_DATA_HOME": str(self.base / "data"), "XDG_CONFIG_HOME": str(self.base / "config")}
+                    "XDG_DATA_HOME": str(self.base / "data"), "XDG_CONFIG_HOME": str(self.base / "config"),
+                    "TMUX_TMPDIR": str(self.tmux_dir)}
         self.env.pop("TMUX", None)
-        self.addCleanup(subprocess.run, [str(stubs / "tmux"), "kill-server"], capture_output=True)
+        self.addCleanup(self.kill_servers)
+
+    def kill_servers(self):
+        for socket in self.tmux_dir.glob("tmux-*/*"):
+            subprocess.run(["tmux", "-S", str(socket), "kill-server"], capture_output=True)
 
     def make_home(self):
         home = self.base / "home"
@@ -188,17 +196,18 @@ class ProjectTest(unittest.TestCase):
             (legacy / "sessions" / role).write_text(f"ROLE={role}\nCLI=claude\nSESSION_ID={sid}\nCWD={cwd}\n")
             (transcripts / f"{sid}.jsonl").write_text("{}\n")
 
-        # A team still running from the old state blocks the move.
-        tmux = self.base / "stubs/tmux"
-        subprocess.run([str(tmux), "new-session", "-d", "-s", "legacy", "sleep 60"], check=True, env=self.env)
-        created = subprocess.run([str(tmux), "list-sessions", "-F", "#{session_created}"],
+        # A team still running from the old state blocks the move. Teams of
+        # that age ran on the default tmux server.
+        tmux = ["tmux", "-L", "default"]
+        subprocess.run([*tmux, "new-session", "-d", "-s", "legacy", "sleep 60"], check=True, env=self.env)
+        created = subprocess.run([*tmux, "list-sessions", "-F", "#{session_created}"],
                                  check=True, capture_output=True, text=True, env=self.env).stdout.strip()
         (legacy / "active").write_text(f"SESSION=legacy\nCREATED={created}\n")
         refused = self.run_tf(home / "scripts/teamflow", "start", cwd=project)
         self.assertNotEqual(refused.returncode, 0, refused.stderr)
         self.assertIn("old .git/ai-team state", refused.stderr)
         self.assertTrue((legacy / "tasks/T-0001").is_dir())
-        subprocess.run([str(tmux), "kill-session", "-t", "=legacy"], check=True, env=self.env)
+        subprocess.run([*tmux, "kill-session", "-t", "=legacy"], check=True, env=self.env)
 
         started = self.run_tf(home / "scripts/teamflow", "start", cwd=project)
         self.assertEqual(started.returncode, 0, started.stderr)

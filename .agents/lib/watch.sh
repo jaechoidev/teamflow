@@ -22,6 +22,10 @@
 #
 # Usage: watch.sh <tmux socket> <session> <session created> <mailbox> <launcher> <root>
 #                 [grace] [cap] [every] [fast] [slow]   (seconds)
+#
+# <tmux socket> is the socket path of the team's own tmux server (tmux -L
+# <name> in the launcher, see tmux-server.sh). The path names the same
+# server whatever TMUX or TMUX_TMPDIR the watcher's environment holds.
 set -u
 
 socket="$1" session="$2" created="$3" mailbox="$4" launcher="$5" root="$6"
