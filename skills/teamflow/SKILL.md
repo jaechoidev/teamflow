@@ -44,6 +44,12 @@ config, it reattaches and names any default workers the session lacks.
 Otherwise it refuses and changes nothing: relay its message, and stop a
 running team only when the user says so.
 
+Each project's team runs on its own tmux server. If `start`, `list`, or
+`add` says the team runs on the shared default tmux server, an older
+teamflow started it. Relay that to the user. With their approval, and once
+`teamflow task list` shows no task in progress, run `teamflow --kill`, then
+`teamflow start --last`. Workers come back with their conversations.
+
 ## 3. Plan, then add the workers the plan needs
 
 Plan the work with the user first, as the Delegator role describes. When the
@@ -67,13 +73,16 @@ teamflow add <type>
 - Add a Notetaker only when the user wants project notes. Project notes
   belong to the Notetaker. Never write notes yourself or create note tasks.
 
-`teamflow list` prints a `tmux attach -t <session>:<id>` command for
-each running worker. Give the user the command for the worker they want to
-watch. Inside tmux, `tmux switch-client -t` takes the same target. To watch
-several workers side by side, `teamflow view <id> <id>...` (or no
-IDs for all) gathers them into one tiled window and prints its command, and
-`teamflow view --close` puts them back. Check `tmux show-options -g prefix` first,
-because user configurations can change the default `Ctrl-B` prefix.
+`teamflow list` prints a `tmux -L <socket> attach -t <session>:<id>` command
+for each running worker. Give the user the command for the worker they want
+to watch, from a terminal outside tmux. Every tmux command for this team
+needs the same `-L <socket>`. `tmux -L <socket> switch-client -t` works only
+for a client already attached to the team's server, and `list` prints how to
+reach it from inside another tmux. To watch several workers side by side,
+`teamflow view <id> <id>...` (or no IDs for all) gathers them into one tiled
+window and prints its command, and `teamflow view --close` puts them back.
+Check `tmux -L <socket> show-options -g prefix` first, because user
+configurations can change the default `Ctrl-B` prefix.
 
 Before the first task to a new worker, inspect it with
 `teamflow pane tail <id>`. A fresh Claude Code worktree
@@ -81,8 +90,7 @@ may show a project trust prompt. Sending a task while that prompt is open can
 select `No, exit`, leaving the task assigned and the window dead. For a
 workspace the user has authorized, select the displayed trust option in tmux,
 then check that the CLI is ready. If a worker already died, restart it with
-`tmux respawn-pane -t <pane-id>`, handle the prompt, and resend the existing
-task ID. `ack=no` alone does not mean a worker is unready: workers
+`teamflow sync`, handle the prompt, and resend the existing task ID. `ack=no` alone does not mean a worker is unready: workers
 acknowledge when they act on their first message.
 
 ## 4. Dispatch and collect

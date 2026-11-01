@@ -16,8 +16,10 @@ worktrees. It keeps them, and this skill decides about them later.
    already down, for example stopped by the watcher after the Delegator left,
    say so and continue with step 4 to clean up worktrees.
 3. Run `teamflow --kill`. With no `--config`, the launcher targets the
-   active team for this repository, even if it used a custom config. Do not
-   kill the tmux server or unrelated sessions.
+   active team for this repository, even if it used a custom config. It
+   also stops this project's session on the shared default tmux server,
+   where older teamflow versions started teams, and nothing else there. Do
+   not kill a tmux server or unrelated sessions yourself.
 4. `--kill` removes each stopped worker's worktree and branch when all of its
    work is already in the main checkout's branch. It lists the worktrees it
    kept. `teamflow worktrees list` shows them again.

@@ -133,11 +133,11 @@ a:focus-visible { outline: 2px solid var(--you); outline-offset: 2px; }
   <header>
     <p class="eyebrow">teamflow</p>
     <h1>How teamflow works</h1>
-    <p class="lede">Your agent session becomes the Delegator. It plans with you, then hands tasks to worker agents from any vendor. Each worker runs in its own tmux window, and every task and result passes through files in the repo's git directory.</p>
+    <p class="lede">Your agent session becomes the Delegator. It plans with you, then hands tasks to worker agents from any vendor. Each worker runs in its own tmux window, on a tmux server that belongs to the project alone, and every task and result passes through files in the repo's git directory.</p>
     <ul class="legend" aria-label="Colors in the figures">
       <li><span class="sw sw-you"></span>your agent session</li>
       <li><span class="sw sw-mail"></span>the mailbox in <code>.git/teamflow/</code></li>
-      <li><span class="sw sw-tmux"></span>worker windows in tmux</li>
+      <li><span class="sw sw-tmux"></span>worker windows on the project's own tmux server</li>
     </ul>
   </header>
 
@@ -372,7 +372,7 @@ a:focus-visible { outline: 2px solid var(--you); outline-offset: 2px; }
 
   <section>
     <h2>When you close your agent</h2>
-    <p>A watcher in the background of the tmux server notices when the Delegator's session ends, so workers don't keep running for long.</p>
+    <p>A watcher in the background of the team's tmux server notices when the Delegator's session ends, so workers don't keep running for long.</p>
     <figure>
       <div class="scroll">
         <svg viewBox="0 0 960 200" role="img" aria-label="Timeline after the Delegator's session ends: the first trim at one minute stops idle workers, trims repeat every minute until ten minutes, then hourly, and at two hours the team stops.">

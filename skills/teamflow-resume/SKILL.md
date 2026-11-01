@@ -30,3 +30,6 @@ workspace. Then continue as the Delegator with the `teamflow` skill.
 
 Do not stop or replace an active session unless the user asks. If `start`
 reports a config or mode conflict, relay that result without killing it.
+If it reports that the team runs on the shared default tmux server, relay
+its steps (`teamflow --kill`, then `teamflow start --last`) and run them
+only with the user's approval.

@@ -63,7 +63,9 @@ choices such as `--type researcher=zai-code:glm-5.3`.
 
 `teamflow version` shows what is installed, and `teamflow doctor` checks tmux
 3.2+, git 2.31+, Python 3.8+, the command on `PATH`, copied aliases and
-functions, and, inside a project, the commands its config uses. A running
+functions, and, inside a project, the commands its config uses, that a running
+team has its own tmux server, and that no worker started with another Claude
+Code session's variables (see One tmux server per project). A running
 team keeps the version it started with. An update applies at the team's next
 start. Earlier versions stay in `~/.local/share/teamflow/`, so you can point
 `current` back at one.
@@ -108,8 +110,10 @@ project and use the `teamflow` skill in one of two ways:
 - **`teamflow config [file]`**: starts the default team from `teamflow.conf`
   (or the named config) first, then plans and delegates to it.
 
-Watch the workers with `tmux attach -t <session>`, one window per worker.
-A bare `teamflow` in the shell only prints help.
+Each project's team runs on a tmux server of its own, so every tmux command
+for it names that server with `-L`. `start` and `teamflow list` print the
+commands, for example `tmux -L tf-myapp-1a2b3c4d attach -t tf-myapp-1a2b3c4d`,
+one window per worker. A bare `teamflow` in the shell only prints help.
 
 `init` creates a Git repository when needed, writes `teamflow.conf` only when
 absent, writes the stub skills, and updates only the marked `AGENTS.md`
@@ -162,6 +166,23 @@ become `teamflow/<id>`, and the AGENTS.md markers are renamed. A team still
 running from the old state is refused until `--kill`. Developer
 conversations restart after the move, because Claude files a transcript
 under the directory it ran in.
+
+Versions up to 0.3 started every project's team on the shared default tmux
+server. Such a team keeps running after an update, but 0.4 does not join it
+or start a second team beside it: `start`, `add`, `remove`, `sync`, `trim`,
+and `view` refuse and say what to run, and `list`, `--verify`, and
+`teamflow pane` still reach it. Move it to the project's own server when its
+workers are idle:
+
+```
+teamflow --kill          # also stops this project's session on the default server
+teamflow start --last    # the same workers, with their conversations
+```
+
+The mailbox, worktrees, and conversations stay. A `teamflow =` line in
+`teamflow.conf` names the lowest version the project needs, and only
+`teamflow doctor` checks it, so a project pinned to an older version works
+unchanged. `teamflow init` raises it.
 
 ## Worker catalog
 
@@ -239,9 +260,12 @@ window, removing closes one, and other workers keep running. The session
 roster lives in `.git/teamflow/running.conf`, so `teamflow.conf` and
 `git status` stay unchanged. Add `--save` to also write the change to the
 default team in `teamflow.conf`. `teamflow list` marks workers that exist in
-this session only, and prints `tmux attach -t <session>:<id>` for each running
-worker to open its window. Inside tmux, use `tmux switch-client -t` with the
-same target.
+this session only, and prints `tmux -L <socket> attach -t <session>:<id>` for
+each running worker to open its window from a terminal outside tmux.
+`tmux -L <socket> switch-client -t` with the same target works only from a
+client already attached to the team's server, because switch-client cannot
+reach another server. From inside another tmux, open a new terminal, or nest
+the team with `env -u TMUX tmux -L <socket> attach -t <target>`.
 
 With no team running, `add` starts one with just that worker, so a team can
 grow from zero as the Delegator needs workers. `add <type>` reuses a worker
@@ -359,8 +383,8 @@ Code, or Claude routed to z.ai. It never runs inside tmux. Workers join on
 demand with `teamflow add <type>`, or the default team starts together:
 
 ```
-teamflow start                    # the default team; prints the session name
-tmux attach -t <session>                     # watch the workers (optional)
+teamflow start                              # start the default team, print the session name
+tmux -L <socket> attach -t <session>        # watch the workers (optional, start prints it)
 ```
 
 Each worker runs in its own window, named by its instance ID, with its
@@ -386,6 +410,47 @@ cat .git/teamflow/note-queue/completed/T-0001.md
 They refuse to run inside a worker window. The `teamflow`,
 `teamflow-resume`, `teamflow-kill`, `teamflow-workers`, and `teamflow-trim`
 skills reach the agent as stubs in the project (see What a project holds).
+
+## One tmux server per project
+
+Every project's team has a tmux server of its own, `tmux -L <socket>`. The
+socket name is the team's session name, such as `tf-myapp-1a2b3c4d` (the
+prefix, the folder name, and a hash of the project's path), and
+`.git/teamflow/active` records it as `SOCKET`. Every tmux call teamflow makes
+names that server, so the team never sees another project's windows:
+
+- **No shared environment.** A tmux server keeps the environment of the
+  process that started it, and every window inherits it. Started from a
+  Claude Code session, it would hand that session's identity to every
+  worker, and a Claude worker would start as a child of the Delegator's
+  session, under its name. teamflow starts the server without these
+  variables, drops any that remain from its global environment, and unsets
+  them again in each worker's command: `CLAUDECODE`, every `CLAUDE_CODE_*`,
+  `CLAUDE_PID`, `CLAUDE_JOB_DIR`, `CLAUDE_EFFORT`, and `AI_AGENT`
+  (`TEAMFLOW_SESSION_ENV` in `.agents/lib/tmux-server.sh`), plus `PWD` and
+  `OLDPWD` in the server's environment. Your own settings stay: `PATH`,
+  `HOME`, `CLAUDE_CONFIG_DIR`, `CLAUDE_IOS_CONFIG`, `ANTHROPIC_*`, and
+  teamflow's `AGENT_*`. A setting of your own that starts with `CLAUDE_CODE_`
+  belongs in the worker's command (an alias or function from
+  `teamflow setup`) or in Claude Code's `settings.json`, because the
+  environment no longer carries it to workers.
+- **Pane checks before typing.** `teamflow pane send-to` and `tail` find the
+  worker's pane in the team's session by its window name, the instance ID,
+  or by its `@teamflow_worker` pane option inside `teamflow view`, and check
+  it again before each line they type. A worker that is not running, has
+  exited, or sits in another session or window is refused with what to run,
+  such as `teamflow add <id>` or `teamflow start --last`. Pane IDs are
+  numbered per server, so a stopped team's IDs can never point at another
+  project's windows.
+- **Session names.** A Claude worker starts with
+  `--name <project>/<instance-id>`, shown in its prompt box, the `/resume`
+  picker, and the terminal title, when its command lists `--name` in its
+  help.
+
+`teamflow doctor` reports a team that still runs on the shared default
+server, and any running worker whose CLI started with these variables. It
+reads a worker's environment with `ps eww` (or `/proc` on Linux) and prints
+variable names only, never their values.
 
 ## Prerequisites
 
@@ -546,8 +611,8 @@ checkout's current commit. A kept branch is reused, so its work continues.
   `acks/`, `panes.tsv`, `sends.log`, `sessions/<instance-id>` (per-role conversation
   registry; runtime state; excluded from git; instantly visible to all
   worktrees because it sits in the git common dir)
-- `.git/teamflow/active` - the running session, the config that started it,
-  and the installed version that runs it. `.git/teamflow/sessions/<instance-id>.<cli>`
+- `.git/teamflow/active` - the running session, its tmux server (`SOCKET`),
+  the config that started it, and the installed version that runs it. `.git/teamflow/sessions/<instance-id>.<cli>`
   - a conversation parked while that role runs another CLI.
 - `.teamflow-worktrees/<instance-id>` + branches `teamflow/<instance-id>` - developer worktrees
   (created when the worker starts, removed by `--kill` once their work is merged)
@@ -629,8 +694,10 @@ still wins):
   twice — run one at a time.
 - **Config selection**: a config is identified by its file path. Editing
   a config while its team runs goes unnoticed, and the edit applies at
-  the next launch. The one-team check sees the tmux server the launcher
-  talks to, so a team on another tmux socket is not detected. A session
+  the next launch. The one-team check looks at the project's own tmux
+  server and at the default one, where versions up to 0.3 started teams. A
+  team an older version started from inside another tmux server (one with
+  its own `-L` name) is not detected. A session
   without a launch record (started by an older copy of the launcher) is
   attributed to the default config. Codex workers are lightly tested: id
   discovery goes by working directory, so two Codex workers that share a
