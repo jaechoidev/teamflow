@@ -282,6 +282,19 @@ class IsolationTest(unittest.TestCase):
         server = project.tmux(project.session, "show-environment", "-g").stdout
         self.assertNotIn("CLAUDE_CODE_SESSION_ID=", server)
 
+    def test_workers_start_under_a_login_shell_that_is_not_posix(self):
+        # Worker commands are POSIX sh. A login shell such as fish cannot
+        # parse them, so tmux must start them with /bin/sh, never $SHELL.
+        project = Project(self, "zeta")
+        fish = project.stubs / "fish"
+        fish.write_text(f'#!/bin/sh\necho "$*" >> {project.stubs}/fish.log\nexit 127\n')
+        fish.chmod(0o755)
+        self.start(project, SHELL=str(fish))
+        added = project.teamflow("add", "researcher", SHELL=str(fish))
+        self.assertEqual(added.returncode, 0, added.stderr)
+        project.wait_for(project.stubs / "researcher-3.env")
+        self.assertFalse((project.stubs / "fish.log").exists())
+
     def test_no_name_flag_for_an_older_cli(self):
         project = Project(self, "epsilon")
         self.start(project, STUB_NO_NAME="1")

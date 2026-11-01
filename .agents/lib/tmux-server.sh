@@ -77,7 +77,7 @@ tf_worker_pane() {
 }
 
 tf_unset_session_env() { # a shell snippet that unsets the session-identity variables of its own environment
-  # Worker windows run their command in the user's shell (sh, bash, or zsh).
+  # Worker windows run their command with /bin/sh (WORKER_SHELL in scripts/teamflow).
   local cases
   cases="$(printf '%s' "$TEAMFLOW_SESSION_ENV" | tr ' ' '|')"
   printf 'for v in $(env | cut -d= -f1); do case "$v" in %s) unset "$v" ;; esac; done;' "$cases"

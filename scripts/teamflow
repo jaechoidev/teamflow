@@ -262,6 +262,11 @@ scrub_server_env() { # drop session-identity variables from the team server's gl
   return 0
 }
 
+# Worker commands are POSIX sh (pane_cmd). tmux runs a command given as one
+# string through the user's login shell, which may be fish or another shell
+# that cannot parse them, so every worker window gets it as /bin/sh -c.
+WORKER_SHELL=/bin/sh
+
 worker_window() { # $1 pane id $2 worker: a worker's window keeps its ID as its name,
   # stays visible after the CLI exits, and flags new output in the status bar.
   # The pane option @teamflow_worker names its worker, wherever the pane
@@ -1069,7 +1074,7 @@ EOF
     clean_env+=(-u "$v")
   done
   p0="$("${clean_env[@]}" tmux -L "$TF_SOCKET" new-session -d -P -F '#{pane_id}' -s "$sess" -n "${order_roles[0]}" \
-    -c "${order_cwds[0]}" "${order_cmds[0]}")"
+    -c "${order_cwds[0]}" "$WORKER_SHELL" -c "${order_cmds[0]}")"
   tmx has-session -t "=$sess" 2>/dev/null || \
     die "pane boot failed: '${order_roles[0]}' exited immediately (session rolled back)"
   # tmux adds PWD itself, and a server that was already running kept what
@@ -1091,7 +1096,7 @@ EOF
   local -a role_pids=("$p0")
   while [ "$next_index" -lt "$pane_total" ]; do
     new_pid="$(tmx new-window -d -P -F '#{pane_id}' -t "=$sess:" -n "${order_roles[$next_index]}" \
-      -c "${order_cwds[$next_index]}" "${order_cmds[$next_index]}")" \
+      -c "${order_cwds[$next_index]}" "$WORKER_SHELL" -c "${order_cmds[$next_index]}")" \
       || boot_fail "could not create a window for ${order_roles[$next_index]}"
     role_pids+=("$new_pid")
     next_index=$((next_index + 1))
@@ -1410,7 +1415,7 @@ cmd_launch_worker() { # config root session worker socket -> the new window's pa
     prepare_worker
     local pid
     [ "$role" != notetaker ] || rm -f "$mailbox/acks/notetaker.json"
-    pid="$(tmx new-window -d -P -F '#{pane_id}' -t "=$sess:" -n "$role" -c "$cwd" "$worker_command")" || return 1
+    pid="$(tmx new-window -d -P -F '#{pane_id}' -t "=$sess:" -n "$role" -c "$cwd" "$WORKER_SHELL" -c "$worker_command")" || return 1
     worker_window "$pid" "$role"
     tmx select-pane -t "$pid" -T "$label"
     printf '%s\n' "$pid"
