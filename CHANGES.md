@@ -3,6 +3,16 @@
 Newest first. Each version is a git tag `vX.Y.Z`. An entry lists the changes
 a user notices and any step a project needs when it moves to that version.
 
+## 0.4.1 (2026-11-01)
+
+- Workers start under any login shell. tmux ran each worker's command
+  through your login shell, so with fish, or any other shell that is not
+  POSIX sh, every worker exited at once. Worker windows now start their
+  command with `/bin/sh`. `SHELL` stays yours, so the agents' own shell
+  commands and any window you open in the team's tmux still use your shell.
+
+Moving a project to 0.4.1: nothing is required.
+
 ## 0.4.0 (2026-11-01)
 
 Each project's team is isolated from every other team.
