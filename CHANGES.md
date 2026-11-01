@@ -3,6 +3,49 @@
 Newest first. Each version is a git tag `vX.Y.Z`. An entry lists the changes
 a user notices and any step a project needs when it moves to that version.
 
+## 0.4.0 (2026-11-01)
+
+Each project's team is isolated from every other team.
+
+- Every project's team runs on a tmux server of its own,
+  `tmux -L <socket>`, named after its session (`tf-<folder>-<hash>`). The
+  attach commands that `start`, `list`, and `view` print include `-L`.
+  `tmux switch-client` reaches only a client of the same server, and `list`
+  says how to open a worker from inside another tmux.
+- Workers no longer inherit the Claude Code session of the agent that
+  started the team. A tmux server started from a Claude Code session kept
+  its `CLAUDECODE`, `CLAUDE_CODE_*`, `CLAUDE_PID`, `CLAUDE_JOB_DIR`,
+  `CLAUDE_EFFORT`, and `AI_AGENT` variables for every window, so Claude
+  workers in every project started as children of that one session, under
+  its name. The team's server starts without them and drops `PWD` and
+  `OLDPWD`, and each worker's command unsets them again. `PATH`, `HOME`,
+  `CLAUDE_CONFIG_DIR`, `CLAUDE_IOS_CONFIG`, `ANTHROPIC_*`, and `AGENT_*`
+  stay.
+- `teamflow pane send-to` and `tail` find a worker's pane by its window
+  name in the team's own session and check it again before each line. A
+  worker that is gone, exited, or in another session or window is refused
+  with the command to run. A stopped team's pane IDs can no longer point at
+  another project's windows.
+- A Claude worker is named `<project>/<instance-id>` (`claude --name`), in
+  its prompt box, the `/resume` picker, and the terminal title, when its
+  command offers `--name`.
+- `teamflow doctor` reports a team on the shared default tmux server, a
+  team server that keeps Claude Code session variables, and running
+  workers whose CLI started with them. It prints variable names only.
+- `teamflow --kill` also stops this project's session on the shared default
+  tmux server, where earlier versions started it.
+
+Moving a project to 0.4.0: a team that 0.3 or older started keeps running on
+the shared default tmux server, and 0.4.0 does not join it or start a second
+team beside it. `start`, `add`, `remove`, `sync`, `trim`, and `view` refuse
+with the steps, while `list`, `--verify`, and `teamflow pane` still reach it.
+When its workers are idle, run `teamflow --kill`, then `teamflow start
+--last`. The mailbox, worktrees, and conversations stay. Nothing else is
+required: the `teamflow =` line in `teamflow.conf` is checked only by
+`doctor`, and `teamflow init` raises it to 0.4.0. Settings of your own that
+start with `CLAUDE_CODE_` no longer reach workers through the environment.
+Set them in the worker's command or in Claude Code's `settings.json`.
+
 ## 0.3.0 (2026-10-03)
 
 The first public version.
