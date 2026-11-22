@@ -639,6 +639,49 @@ optional: open `docs/` as a vault to browse notes, specs, and plans
 together. Init does not create a vault or `docs/`, and teamflow creates the
 notes folder without configuring Obsidian.
 
+### Shared task handoffs (optional)
+
+A task number such as `T-0001` is only a label in its clone's local
+mailbox. New tasks also receive a random, stable UUID. Local planning,
+dispatch and completion work as before, without a tracked file, commit,
+PR or remote.
+
+When a finished task should be shared, first review its result locally.
+**Before running `teamflow task release T-0001`**, while the complete
+mailbox record is still available, explicitly export a short shareable
+summary:
+
+```sh
+teamflow handoff export T-0001 'Validated the fix with the simulator build.'
+# Prints docs/handoffs/teamflow/<full-uuid>.json
+teamflow handoff read <full-uuid>
+```
+
+Export writes a new record without overwriting an existing handoff,
+staging files in Git, committing, pushing, or creating a PR. Review the
+record yourself before sharing it through your normal project workflow.
+It includes the task title, local label, UUID, the recorded completing
+worker's Teamflow role, and your supplied summary, not the task body,
+worker's full result, logs or session transcript. Keep the title and
+summary free of sensitive details. Legacy tasks with no UUID still work
+locally but cannot be exported with this command.
+
+Optionally set explicit clone-local display labels **before creating
+tasks**. These can become visible to anyone with access to a shared
+handoff. They are not verified identities:
+
+```sh
+git config --local teamflow.handoffCreator 'Alex Example'
+git config --local teamflow.handoffOrigin 'studio'
+```
+
+No labels are inferred from Git author information, remotes, home paths,
+or hardware. A fresh clone can read a shared record only if it includes
+that file in its checkout; bare short labels and partial UUIDs are not
+looked up. Export from a linked worktree writes into the main checkout
+that owns the mailbox, while read always looks in the checkout where
+you run it. No note is required for local-only work.
+
 ## Conversation persistence
 
 Each pane's CLI conversation survives `--kill` and relaunch. On a fresh `up`
