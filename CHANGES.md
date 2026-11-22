@@ -3,6 +3,16 @@
 Newest first. Each version is a git tag `vX.Y.Z`. An entry lists the changes
 a user notices and any step a project needs when it moves to that version.
 
+## 0.5.0 (2026-11-21)
+
+- New tasks receive stable UUIDs while keeping clone-local `T-####` labels.
+- Export a reviewed handoff explicitly and read it by full UUID from any
+  checkout containing the record. Local planning, old task records, and
+  existing notes are unchanged. Nothing is published automatically.
+
+Moving a project to 0.5.0: no migration is required. New tasks can be
+exported before release and mailbox cleanup.
+
 ## 0.4.1 (2026-11-01)
 
 - Workers start under any login shell. tmux ran each worker's command

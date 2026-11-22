@@ -35,6 +35,8 @@
 #   teamflow guide <skill>|notes  print the full instructions of a skill
 #   teamflow role show|edit <role>  print the role in effect, or copy the
 #                                 default into the project to customize it
+#   teamflow handoff export <T-id> <summary>  write a curated shared handoff
+#   teamflow handoff read <full-uuid>         read a handoff in this checkout
 #   teamflow note new <type> <title>  create a project note from its template
 #                                 in docs/notes/<type>s/, named by its creation
 #                                 time, and print its path
@@ -1683,6 +1685,25 @@ cmd_note() { # note new <type> <title>: create a project note and print its path
   python3 "$TOOL_HOME/scripts/teamflow_scaffold.py" note-new "$TOOL_HOME" "$root" "$2" "$3"
 }
 
+cmd_handoff() {
+  local root common
+  case "${1:-}" in
+    export)
+      [ "$#" -eq 3 ] || die "usage: teamflow handoff export <T-####> <summary>"
+      [ "${AGENT_ROLE:-delegator}" = delegator ] || die "only the Delegator exports handoffs"
+      root="$(team_root)" || exit $?
+      common="$(git_common_dir "$root")" || exit $?
+      python3 "$TOOL_HOME/scripts/teamflow_handoff.py" export "$root" "$common" "$2" "$3"
+      ;;
+    read)
+      [ "$#" -eq 2 ] || die "usage: teamflow handoff read <full-uuid>"
+      root="$(repo_root)" || exit $?
+      python3 "$TOOL_HOME/scripts/teamflow_handoff.py" read "$root" "$2"
+      ;;
+    *) die "usage: teamflow handoff export <T-####> <summary> | handoff read <full-uuid>" ;;
+  esac
+}
+
 # ---------- main -----------------------------------------------------------------
 
 # Mode and flags may come in any order. Everything is parsed and checked
@@ -1699,6 +1720,7 @@ case "${1:-}" in
   setup) shift; exec python3 "$TOOL_HOME/scripts/teamflow_setup.py" setup "$@" ;;
   role) shift; cmd_role "$@"; exit $? ;;
   note) shift; cmd_note "$@"; exit $? ;;
+  handoff) shift; cmd_handoff "$@"; exit $? ;;
   version|--version) cmd_version; exit 0 ;;
   doctor) cmd_doctor; exit $? ;;
   update) cmd_update; exit $? ;;

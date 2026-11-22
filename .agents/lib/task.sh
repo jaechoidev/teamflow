@@ -91,7 +91,10 @@ case "$cmd" in
        && ! awk -F '\t' -v r="$to" '$1 == r { found = 1 } END { exit !found }' "$AGENT_MAILBOX/panes.tsv"; then
       fail "no worker '$to' in the team roster ($(cut -f1 "$AGENT_MAILBOX/panes.tsv" | grep -vx delegator | paste -sd ' ' -)). Check: scripts/teamflow workers list"
     fi
+    identity_source="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../scripts" && pwd)" || exit 1
+    identity="$(python3 "$identity_source/teamflow_handoff.py" new-identity "$title")" || exit 1
     id="$(next_id)" || exit 1
+    printf '%s\n' "$identity" > "$TASKS/$id/identity.json" || fail "cannot write task identity"
     from="${AGENT_ROLE:-user}"
     { echo "id:      $id"
       echo "from:    $from"
