@@ -40,6 +40,14 @@
 #   teamflow note new <type> <title>  create a project note from its template
 #                                 in docs/notes/<type>s/, named by its creation
 #                                 time, and print its path
+#   teamflow status [--json]      list mailbox tasks with their age, and flag
+#                                 the stuck ones: not picked up, long-running,
+#                                 or a result waiting on the Delegator
+#   teamflow nudge [--dry-run]    reconcile stuck tasks: optionally remind idle
+#                                 workers with --max-resends N (default 0), and
+#                                 raise <mailbox>/attention (plus --on-attention
+#                                 CMD) for results waiting on the Delegator.
+#                                 Bounded retries; overlapping periodic runs skip
 #   teamflow --verify             show worker windows, acknowledgements, the
 #                                 Delegator, and the watcher
 #   teamflow --check-models       probe configured models (spends a little quota)
@@ -1721,6 +1729,7 @@ case "${1:-}" in
   role) shift; cmd_role "$@"; exit $? ;;
   note) shift; cmd_note "$@"; exit $? ;;
   handoff) shift; cmd_handoff "$@"; exit $? ;;
+  status|nudge) mode="$1"; shift; exec python3 "$TOOL_HOME/scripts/teamflow_status.py" "$mode" "$TOOL_LIB" "$@" ;;
   version|--version) cmd_version; exit 0 ;;
   doctor) cmd_doctor; exit $? ;;
   update) cmd_update; exit $? ;;

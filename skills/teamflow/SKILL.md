@@ -119,6 +119,11 @@ worker is busy, check `task status` or `task inbox delegator` about every 100
 seconds, and read the result before you report. Never say a task is done
 before its status is `done`.
 
+When you start or resume a session, run `teamflow status` first: it flags
+tasks no worker picked up, long-running ones, and results waiting for you.
+Read every `awaiting-delegator` result before dispatching more; release it
+after the review and integration below.
+
 After review and integration, release every completed task with
 `task release`. With a Notetaker in the team, the mailbox result starts its
 investigation, and it checks code, discussion, tests, decisions, and sources

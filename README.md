@@ -538,6 +538,59 @@ collision with already-integrated work stops as a conflict you resolve
 deliberately. No role's checkout ever overwrites another's files. Only
 reviewed work enters main; nothing is pushed without your approval.
 
+## Finding and moving stuck tasks
+
+A handoff can be lost without any error. `send-to` types into a worker's
+pane, so text sent while the CLI is mid-turn waits as input, and a trust
+prompt or a dead pane can swallow it. Results never reach the Delegator by
+themselves either: it sees them only when it runs `teamflow task inbox
+delegator`, so a finished task waits until someone prompts it.
+
+```
+teamflow status            # every task with its age; stuck ones are flagged
+teamflow status --json
+teamflow nudge --dry-run   # what nudge would do
+teamflow nudge             # report lost pickups, raise waiting results
+teamflow nudge --max-resends 2  # explicitly enable bounded pickup reminders
+```
+
+`status` flags three kinds of task:
+
+| Flag | Meaning | Default |
+| --- | --- | --- |
+| `not-picked-up` | still `assigned`, no worker took it | 10 minutes (`--pickup`) |
+| `long-running` | `in-progress` without a new event | 120 minutes (`--long`) |
+| `awaiting-delegator` | a result the Delegator dispatched is `done` but not released | 10 minutes (`--done`) |
+
+Overlapping `nudge` runs are skipped per mailbox. By default, it does not
+type into worker panes. With `--max-resends N`, it rechecks the current
+assignment for `not-picked-up` and sends a task-ID reminder
+(`Task T-0001. Details: task.sh read T-0001`). It reserves each attempt in
+the task's events before sending, so even failed or uncertain sends count
+toward that cap. An attempt restarts the pickup wait. A
+successful send is not a worker acknowledgment: check the task or inspect
+the worker if it stays stuck. Do not enable periodic resends for panes you
+cannot trust to be at an agent prompt. Leave the default `--max-resends 0`
+for attention notifications without pane input.
+
+For waiting results or long-running tasks, `nudge` writes
+`<mailbox>/attention` (JSON). When a new waiting set or hook needs notice,
+it runs the explicitly configured shell command from `--on-attention` or
+`$TEAMFLOW_ON_ATTENTION` with that JSON on stdin. Only successful delivery
+to a configured hook advances its checkpoint. Pane sends time out after
+10 seconds and hooks after 30 seconds. A failed send or hook makes the
+command exit nonzero. Failed hooks are retried on the next run, so use a
+trusted, idempotent hook. The attention files clear when nothing waits.
+
+`nudge` never registers as the Delegator, never types into the Delegator's
+session, and never changes a task's status. After inspecting a dry run and choosing
+its hooks explicitly, run it every few minutes from
+launchd or cron in the project directory, for example:
+
+```
+*/5 * * * * cd ~/code/myapp && teamflow nudge --on-attention 'osascript -e "display notification \"teamflow: results wait\""'
+```
+
 ## When the Delegator leaves
 
 A team started in workers mode stops by itself after its Delegator is gone,
