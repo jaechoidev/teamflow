@@ -37,7 +37,7 @@ import unicodedata
 
 SKILLS = ("teamflow", "teamflow-resume", "teamflow-kill", "teamflow-workers", "teamflow-trim")
 SCRIPTS = ("scripts/teamflow", "scripts/teamflow_workers.py", "scripts/teamflow_scaffold.py",
-           "scripts/teamflow_setup.py", "scripts/teamflow_handoff.py")
+           "scripts/teamflow_setup.py", "scripts/teamflow_handoff.py", "scripts/teamflow_status.py")
 SHIPPED_DIRS = ((".agents/lib", "*.sh"), (".agents/roles", "*.md"), (".agents/doc-templates", "*.md"))
 SHIPPED_FILES = SCRIPTS + (".agents/AGENTS-SECTION.md", ".agents/teamflow.conf", "CHANGES.md", "README.md",
                          "LICENSE")

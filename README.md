@@ -538,6 +538,47 @@ collision with already-integrated work stops as a conflict you resolve
 deliberately. No role's checkout ever overwrites another's files. Only
 reviewed work enters main; nothing is pushed without your approval.
 
+## Finding and moving stuck tasks
+
+A handoff can be lost without any error. `send-to` types into a worker's
+pane, so text sent while the CLI is mid-turn waits as input, and a trust
+prompt or a dead pane can swallow it. Results never reach the Delegator by
+themselves either: it sees them only when it runs `teamflow task inbox
+delegator`, so a finished task waits until someone prompts it.
+
+```
+teamflow status            # every task with its age; stuck ones are flagged
+teamflow status --json
+teamflow nudge --dry-run   # what nudge would do
+teamflow nudge             # resend lost pickups, raise waiting results
+```
+
+`status` flags three kinds of task:
+
+| Flag | Meaning | Default |
+| --- | --- | --- |
+| `not-picked-up` | still `assigned`, no worker took it | 10 minutes (`--pickup`) |
+| `long-running` | `in-progress` without a new event | 120 minutes (`--long`) |
+| `awaiting-delegator` | a result the Delegator dispatched is `done` but not released | 10 minutes (`--done`) |
+
+`nudge` is a reconciler: it acts on what the mailbox says now, so running it
+again is harmless. For `not-picked-up` it resends the pickup line
+(`Task T-0001: <title>. Details: task.sh read T-0001`) and records the
+resend in the task's events. Each resend restarts the pickup wait, and after
+`--max-resends` (default 2) it stops and tells you to look at the worker.
+For results that wait, it writes `<mailbox>/attention` (JSON) and, when the
+set of waiting tasks changes, runs `--on-attention <command>` or
+`$TEAMFLOW_ON_ATTENTION` with that JSON on stdin. The file is removed once
+nothing waits. A hook that fails is retried on the next run.
+
+`nudge` never registers as the Delegator, never types into the Delegator's
+session, and never changes a task's status. Run it every few minutes from
+launchd or cron in the project directory, for example:
+
+```
+*/5 * * * * cd ~/code/myapp && teamflow nudge --on-attention 'osascript -e "display notification \"teamflow: results wait\""'
+```
+
 ## When the Delegator leaves
 
 A team started in workers mode stops by itself after its Delegator is gone,

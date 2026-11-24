@@ -3,6 +3,19 @@
 Newest first. Each version is a git tag `vX.Y.Z`. An entry lists the changes
 a user notices and any step a project needs when it moves to that version.
 
+## Unreleased
+
+- `teamflow status` lists mailbox tasks with their age and flags the ones
+  that stopped moving: not picked up, long-running, or a result waiting on
+  the Delegator.
+- `teamflow nudge` reconciles them: it resends the pickup line to a worker
+  that has not taken its task (bounded, logged in the task's events) and
+  raises `<mailbox>/attention` plus an optional `--on-attention` hook for
+  results the Delegator has not read. Safe to run from launchd or cron.
+
+Moving a project: nothing is required. Both commands only read the mailbox,
+except for the resend events and the attention files.
+
 ## 0.5.0 (2026-11-21)
 
 - New tasks receive stable UUIDs while keeping clone-local `T-####` labels.
