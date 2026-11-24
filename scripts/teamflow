@@ -43,11 +43,11 @@
 #   teamflow status [--json]      list mailbox tasks with their age, and flag
 #                                 the stuck ones: not picked up, long-running,
 #                                 or a result waiting on the Delegator
-#   teamflow nudge [--dry-run]    reconcile stuck tasks: resend the pickup line
-#                                 to a worker that has not taken its task, and
+#   teamflow nudge [--dry-run]    reconcile stuck tasks: optionally remind idle
+#                                 workers with --max-resends N (default 0), and
 #                                 raise <mailbox>/attention (plus --on-attention
 #                                 CMD) for results waiting on the Delegator.
-#                                 Idempotent; safe to run from launchd or cron
+#                                 Bounded retries; overlapping periodic runs skip
 #   teamflow --verify             show worker windows, acknowledgements, the
 #                                 Delegator, and the watcher
 #   teamflow --check-models       probe configured models (spends a little quota)

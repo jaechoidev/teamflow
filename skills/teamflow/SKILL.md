@@ -121,7 +121,8 @@ before its status is `done`.
 
 When you start or resume a session, run `teamflow status` first: it flags
 tasks no worker picked up, long-running ones, and results waiting for you.
-Read and release every `awaiting-delegator` result before dispatching more.
+Read every `awaiting-delegator` result before dispatching more; release it
+after the review and integration below.
 
 After review and integration, release every completed task with
 `task release`. With a Notetaker in the team, the mailbox result starts its

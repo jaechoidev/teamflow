@@ -8,13 +8,13 @@ a user notices and any step a project needs when it moves to that version.
 - `teamflow status` lists mailbox tasks with their age and flags the ones
   that stopped moving: not picked up, long-running, or a result waiting on
   the Delegator.
-- `teamflow nudge` reconciles them: it resends the pickup line to a worker
-  that has not taken its task (bounded, logged in the task's events) and
+- `teamflow nudge` reports unclaimed tasks and optionally resends pickup
+  reminders with `--max-resends N` (off by default, attempts logged). It
   raises `<mailbox>/attention` plus an optional `--on-attention` hook for
-  results the Delegator has not read. Safe to run from launchd or cron.
+  unreleased results or long-running tasks. Periodic runs serialize per mailbox.
 
-Moving a project: nothing is required. Both commands only read the mailbox,
-except for the resend events and the attention files.
+Moving a project: nothing is required. Status is read-only. Nudge updates
+local attention state; worker resends and notification hooks are opt-in.
 
 ## 0.5.0 (2026-11-21)
 
